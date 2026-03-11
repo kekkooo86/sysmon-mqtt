@@ -2,43 +2,35 @@ const { Tray, Menu, app, nativeImage } = require('electron');
 const path = require('path');
 
 let tray = null;
-let currentTemp = '--';
 let mqttStatus = 'disconnected';
+let activeSensors = 0;
 
 function createTray(mainWindow) {
   const iconPath = path.join(__dirname, '../../assets/tray-icon.png');
   tray = new Tray(nativeImage.createFromPath(iconPath));
-
-  updateTooltip();
   buildMenu(mainWindow);
 
   tray.on('click', () => {
-    if (mainWindow.isVisible()) {
-      mainWindow.focus();
-    } else {
-      mainWindow.show();
-    }
+    mainWindow.isVisible() ? mainWindow.focus() : mainWindow.show();
   });
 
   return tray;
 }
 
 function buildMenu(mainWindow) {
+  const statusLabel = mqttStatus === 'connected'
+    ? `MQTT: connesso (${activeSensors} sensori)`
+    : `MQTT: ${mqttStatus}`;
+
   const menu = Menu.buildFromTemplate([
-    { label: `CPU: ${currentTemp}°C`, enabled: false },
-    { label: `MQTT: ${mqttStatus}`, enabled: false },
+    { label: statusLabel, enabled: false },
     { type: 'separator' },
     { label: 'Impostazioni', click: () => mainWindow.show() },
     { type: 'separator' },
     { label: 'Esci', click: () => app.quit() }
   ]);
   tray.setContextMenu(menu);
-}
-
-function updateTemperature(temp, mainWindow) {
-  currentTemp = temp;
-  updateTooltip();
-  buildMenu(mainWindow);
+  tray.setToolTip(`PC Monitor — ${statusLabel}`);
 }
 
 function updateMqttStatus(status, mainWindow) {
@@ -46,8 +38,10 @@ function updateMqttStatus(status, mainWindow) {
   buildMenu(mainWindow);
 }
 
-function updateTooltip() {
-  if (tray) tray.setToolTip(`CPU Temp: ${currentTemp}°C`);
+function updateActiveSensors(count, mainWindow) {
+  activeSensors = count;
+  buildMenu(mainWindow);
 }
 
-module.exports = { createTray, updateTemperature, updateMqttStatus };
+module.exports = { createTray, updateMqttStatus, updateActiveSensors };
+

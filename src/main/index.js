@@ -1,17 +1,18 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('path');
-const store = require('./store');
-const cpuMonitor = require('./cpu-monitor');
-const mqttClient = require('./mqtt-client');
-const { createTray, updateTemperature, updateMqttStatus } = require('./tray');
-const { registerHandlers } = require('./ipc-handlers');
+const store         = require('./store');
+const mqttClient    = require('./mqtt-client');
+const sensorManager = require('./sensor-manager');
+const { createTray, updateMqttStatus } = require('./tray');
+const { registerHandlers, getDefinitions, buildConfigs } = require('./ipc-handlers');
+const autostart     = require('./autostart');
 
 let mainWindow = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 520,
-    height: 600,
+    width: 600,
+    height: 680,
     resizable: false,
     show: false,
     webPreferences: {
@@ -23,25 +24,18 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
 
-  // Renderer misses events fired before it finishes loading — resync on ready
   mainWindow.webContents.on('did-finish-load', () => {
-    const status = mqttClient.isConnected ? 'connected' : 'disconnected';
-    mainWindow.webContents.send('mqtt-status', status);
+    mainWindow.webContents.send('mqtt-status', mqttClient.isConnected ? 'connected' : 'disconnected');
   });
 
   mainWindow.on('close', (e) => {
-    if (!app.isQuitting) {
-      e.preventDefault();
-      mainWindow.hide();
-    }
+    if (!app.isQuitting) { e.preventDefault(); mainWindow.hide(); }
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   createWindow();
-
-  const tray = createTray(mainWindow);
-
+  createTray(mainWindow);
   registerHandlers(mainWindow);
 
   // Connect MQTT
@@ -50,11 +44,13 @@ app.whenReady().then(() => {
   mqttClient.on('disconnected', () => updateMqttStatus('disconnected', mainWindow));
   mqttClient.on('error',        () => updateMqttStatus('error', mainWindow));
 
-  // Start CPU monitoring
-  cpuMonitor.on('temperature', (temp) => updateTemperature(temp, mainWindow));
-  cpuMonitor.start(store.get('monitor').interval);
+  // Start sensor manager with saved configs
+  const defs    = await getDefinitions();
+  const configs = buildConfigs(defs, store.get('sensors'));
+  sensorManager.load(defs, configs, mqttClient);
+  sensorManager.start();
 
-  // Show window on first launch if no settings configured
+  // Show window on first launch
   if (!store.get('mqtt').host || store.get('mqtt').host === 'localhost') {
     mainWindow.show();
   }
@@ -62,11 +58,8 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   app.isQuitting = true;
-  cpuMonitor.stop();
+  sensorManager.stop();
   mqttClient.disconnect();
 });
 
-app.on('window-all-closed', (e) => {
-  // Keep app running in tray — don't quit
-  e.preventDefault();
-});
+app.on('window-all-closed', (e) => e.preventDefault());

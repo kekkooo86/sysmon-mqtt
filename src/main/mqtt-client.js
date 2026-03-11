@@ -15,14 +15,6 @@ class MqttClient extends EventEmitter {
     const protocol = tls ? 'mqtts' : 'mqtt';
     const url = `${protocol}://${host}:${port}`;
 
-    console.log(`[MQTT] Connecting to ${url} with clientId "${clientId}" ...`);
-    console.log(`[MQTT] Options: ${url}`, {
-      clean: true,
-      reconnectPeriod: 5000,
-      ...(username && { username }),
-      ...(password && { password: password })
-    });
-
     const options = {
       clientId,
       clean: true,

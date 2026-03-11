@@ -3,79 +3,79 @@
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
-  <title>CPU Temp Monitor</title>
+  <title>PC Monitor</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <header>
-    <h1>CPU Temp → MQTT</h1>
+    <h1>PC Monitor</h1>
     <div id="status-bar">
       <span id="status-mqtt" class="status disconnected">MQTT: disconnesso</span>
-      <span id="status-temp">Temp: --°C</span>
+      <span id="status-sensors">0 sensori attivi</span>
     </div>
   </header>
 
-  <main>
-    <section class="card">
-      <h2>Connessione MQTT</h2>
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="sensors">Sensori</button>
+    <button class="tab-btn" data-tab="connection">Connessione</button>
+    <button class="tab-btn" data-tab="appSettings">App</button>
+  </nav>
+
+  <!-- TAB: Sensori -->
+  <div id="tab-sensors" class="tab-content active">
+    <div class="tab-toolbar">
+      <button id="btn-refresh-sensors" class="secondary small">↻ Scopri sensori</button>
+      <span class="hint">Abilita i sensori da pubblicare sul broker MQTT</span>
+    </div>
+    <div id="sensor-list"></div>
+  </div>
+
+  <!-- TAB: Connessione MQTT -->
+  <div id="tab-connection" class="tab-content">
+    <div class="card">
       <div class="form-grid">
         <label>Host</label>
         <input type="text" id="mqtt-host" placeholder="192.168.1.x">
-
         <label>Porta</label>
         <input type="number" id="mqtt-port" placeholder="1883">
-
         <label>Username</label>
         <input type="text" id="mqtt-username" autocomplete="off">
-
         <label>Password</label>
         <input type="password" id="mqtt-password" autocomplete="off">
-
         <label>Client ID</label>
         <input type="text" id="mqtt-clientId">
-
-        <label>Topic</label>
-        <input type="text" id="mqtt-topic">
-
         <label>QoS</label>
         <select id="mqtt-qos">
           <option value="0">0 — At most once</option>
           <option value="1">1 — At least once</option>
           <option value="2">2 — Exactly once</option>
         </select>
-
         <label>TLS</label>
         <label class="toggle"><input type="checkbox" id="mqtt-tls"><span></span></label>
-
         <label>Retain</label>
         <label class="toggle"><input type="checkbox" id="mqtt-retain"><span></span></label>
       </div>
-      <button id="btn-test" class="secondary">Test connessione</button>
-      <span id="test-result"></span>
-    </section>
-
-    <section class="card">
-      <h2>Monitoraggio</h2>
-      <div class="form-grid">
-        <label>Intervallo (ms)</label>
-        <input type="number" id="monitor-interval" min="100" step="100" placeholder="1000">
+      <div class="row">
+        <button id="btn-test" class="secondary">Test connessione</button>
+        <span id="test-result"></span>
       </div>
-    </section>
+    </div>
+  </div>
 
-    <section class="card">
-      <h2>Applicazione</h2>
+  <!-- TAB: App -->
+  <div id="tab-appSettings" class="tab-content">
+    <div class="card">
       <div class="form-grid">
         <label>Avvio automatico</label>
         <label class="toggle"><input type="checkbox" id="app-autostart"><span></span></label>
-
         <label>Minimizza nel tray</label>
         <label class="toggle"><input type="checkbox" id="app-minimizeToTray"><span></span></label>
       </div>
-    </section>
-  </main>
+    </div>
+  </div>
 
   <footer>
-    <button id="btn-save" class="primary">Salva impostazioni</button>
+    <button id="btn-save" class="primary">Salva</button>
   </footer>
 
   <script src="app.js"></script>

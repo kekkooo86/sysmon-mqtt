@@ -8,20 +8,18 @@ const schema = {
       port:     { type: 'number', default: 1883 },
       username: { type: 'string', default: '' },
       password: { type: 'string', default: '' },
-      clientId: { type: 'string', default: 'cpu-temp-monitor' },
-      topic:    { type: 'string', default: 'homeassistant/pc_gaming/sensor/cpu_temperature/state' },
+      clientId: { type: 'string', default: 'pc-monitor' },
       tls:      { type: 'boolean', default: false },
       qos:      { type: 'number', default: 0 },
       retain:   { type: 'boolean', default: false }
     },
     default: {}
   },
-  monitor: {
-    type: 'object',
-    properties: {
-      interval: { type: 'number', default: 1000 }
-    },
-    default: {}
+  // sensors: array of { id, enabled, topic, threshold, interval }
+  // Managed dynamically — no strict schema so new sensors can be added
+  sensors: {
+    type: 'array',
+    default: []
   },
   app: {
     type: 'object',

@@ -1,37 +1,46 @@
-const { ipcMain, BrowserWindow, app } = require('electron');
-const store = require('./store');
-const cpuMonitor = require('./cpu-monitor');
-const mqttClient = require('./mqtt-client');
-const autostart = require('./autostart');
+const { ipcMain } = require('electron');
+const store          = require('./store');
+const mqttClient     = require('./mqtt-client');
+const sensorManager  = require('./sensor-manager');
+const { discoverSensors } = require('./sensors');
+const autostart      = require('./autostart');
 
-function registerHandlers(mainWindow) {
-  ipcMain.handle('get-settings', () => {
+let _cachedDefinitions = null;
+
+async function getDefinitions() {
+  if (!_cachedDefinitions) _cachedDefinitions = await discoverSensors();
+  return _cachedDefinitions;
+}
+
+// Merge user configs over sensor defaults, fill missing fields
+function buildConfigs(definitions, savedConfigs) {
+  return definitions.map(def => {
+    const saved = savedConfigs.find(c => c.id === def.id) || {};
     return {
-      mqtt: store.get('mqtt'),
-      monitor: store.get('monitor'),
-      app: {
-        ...store.get('app'),
-        autostart: autostart.isEnabled()
-      }
+      id:        def.id,
+      enabled:   saved.enabled   ?? false,
+      topic:     saved.topic     ?? def.defaultTopic,
+      threshold: saved.threshold ?? def.defaultThreshold,
+      interval:  saved.interval  ?? def.defaultInterval
     };
   });
+}
+
+function registerHandlers(mainWindow) {
+  // --- MQTT settings ---
+  ipcMain.handle('get-settings', () => ({
+    mqtt: store.get('mqtt'),
+    app:  { ...store.get('app'), autostart: autostart.isEnabled() }
+  }));
 
   ipcMain.handle('save-settings', (_, settings) => {
-    if (settings.mqtt)    store.set('mqtt', settings.mqtt);
-    if (settings.monitor) store.set('monitor', settings.monitor);
+    if (settings.mqtt) store.set('mqtt', settings.mqtt);
     if (settings.app) {
       store.set('app', settings.app);
       settings.app.autostart ? autostart.enable() : autostart.disable();
     }
-
-    // Restart MQTT connection with new config
     mqttClient.disconnect();
     mqttClient.connect(store.get('mqtt'));
-
-    // Restart monitor with new interval
-    cpuMonitor.stop();
-    cpuMonitor.start(store.get('monitor').interval);
-
     return { success: true };
   });
 
@@ -39,48 +48,50 @@ function registerHandlers(mainWindow) {
     return new Promise((resolve) => {
       const mqtt = require('mqtt');
       const { host, port, username, password, clientId, tls } = mqttConfig;
-      const protocol = tls ? 'mqtts' : 'mqtt';
-      const url = `${protocol}://${host}:${port}`;
-      const options = {
+      const url = `${tls ? 'mqtts' : 'mqtt'}://${host}:${port}`;
+      const client = mqtt.connect(url, {
         clientId: clientId + '_test',
         clean: true,
         connectTimeout: 5000,
         reconnectPeriod: 0,
         ...(username && { username }),
         ...(password && { password })
-      };
-      const client = mqtt.connect(url, options);
-      const timeout = setTimeout(() => {
-        client.end(true);
-        resolve({ success: false, error: 'Connection timeout' });
-      }, 6000);
-      client.on('connect', () => {
-        clearTimeout(timeout);
-        client.end(true);
-        resolve({ success: true });
       });
-      client.on('error', (err) => {
-        clearTimeout(timeout);
-        client.end(true);
-        resolve({ success: false, error: err.message });
-      });
+      const timeout = setTimeout(() => { client.end(true); resolve({ success: false, error: 'Timeout' }); }, 6000);
+      client.on('connect', () => { clearTimeout(timeout); client.end(true); resolve({ success: true }); });
+      client.on('error', (err) => { clearTimeout(timeout); client.end(true); resolve({ success: false, error: err.message }); });
     });
   });
 
-  // Forward temperature readings to renderer
-  cpuMonitor.on('temperature', (temp) => {
-    mainWindow.webContents.send('temperature', temp);
-    const mqttConfig = store.get('mqtt');
-    mqttClient.publish(mqttConfig.topic, String(temp), {
-      qos: mqttConfig.qos,
-      retain: mqttConfig.retain
-    });
+  // --- Sensors ---
+  ipcMain.handle('get-available-sensors', async () => {
+    _cachedDefinitions = null; // force re-discovery
+    const defs = await getDefinitions();
+    const savedConfigs = store.get('sensors');
+    return buildConfigs(defs, savedConfigs).map((cfg, i) => ({
+      ...cfg,
+      name:     defs[i].name,
+      category: defs[i].category,
+      unit:     defs[i].unit
+    }));
+  });
+
+  ipcMain.handle('save-sensor-configs', async (_, configs) => {
+    store.set('sensors', configs);
+    const defs = await getDefinitions();
+    sensorManager.reload(defs, configs, mqttClient);
+    return { success: true };
+  });
+
+  // Forward sensor updates to renderer
+  sensorManager.on('sensor-update', (data) => {
+    if (!mainWindow.isDestroyed()) mainWindow.webContents.send('sensor-update', data);
   });
 
   // Forward MQTT status to renderer
-  mqttClient.on('connected',    () => mainWindow.webContents.send('mqtt-status', 'connected'));
-  mqttClient.on('disconnected', () => mainWindow.webContents.send('mqtt-status', 'disconnected'));
-  mqttClient.on('error',        () => mainWindow.webContents.send('mqtt-status', 'error'));
+  mqttClient.on('connected',    () => { if (!mainWindow.isDestroyed()) mainWindow.webContents.send('mqtt-status', 'connected'); });
+  mqttClient.on('disconnected', () => { if (!mainWindow.isDestroyed()) mainWindow.webContents.send('mqtt-status', 'disconnected'); });
+  mqttClient.on('error',        () => { if (!mainWindow.isDestroyed()) mainWindow.webContents.send('mqtt-status', 'error'); });
 }
 
-module.exports = { registerHandlers };
+module.exports = { registerHandlers, getDefinitions, buildConfigs };
