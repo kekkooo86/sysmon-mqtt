@@ -1,4 +1,6 @@
 const { EventEmitter } = require('events');
+const store            = require('./store');
+const { resolveTopic } = require('./utils');
 
 // Master timer interval — all sensors are checked against this tick.
 // Individual sensor intervals are multiples of TICK_MS.
@@ -48,6 +50,10 @@ class SensorManager extends EventEmitter {
     this.start();
   }
 
+  get activeCount() {
+    return this._sensors.length;
+  }
+
   async _tick() {
     const now = Date.now();
     for (const entry of this._sensors) {
@@ -72,7 +78,8 @@ class SensorManager extends EventEmitter {
       this.emit('sensor-update', { id: entry.def.id, name: entry.def.name, value, unit: entry.def.unit });
 
       if (this._mqttClient && this._mqttClient.isConnected) {
-        this._mqttClient.publish(entry.cfg.topic, String(value));
+        const prefix = store.get('mqtt').topicPrefix ?? '';
+        this._mqttClient.publish(resolveTopic(entry.cfg.topic, prefix), String(value));
       }
     } catch (err) {
       // Sensor read failure — emit but don't crash

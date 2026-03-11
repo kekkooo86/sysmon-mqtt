@@ -1,7 +1,7 @@
-# Piano: Electron MQTT CPU Temp Monitor
+# Piano: SysMon MQTT
 
 ## Problema
-Creare un'applicazione Electron professionale che monitora la temperatura della CPU e pubblica i cambiamenti di stato tramite MQTT verso Home Assistant, con tray icon, autostart e supporto cross-platform (Windows/macOS/Linux).
+Creare un'applicazione Electron professionale che monitora i sensori di sistema (CPU, GPU, RAM, disco, rete) e pubblica i valori tramite MQTT su qualsiasi broker compatibile, con tray icon, autostart e supporto cross-platform (Windows/macOS/Linux).
 
 ## Approccio
 App Electron con architettura main/renderer ben separata. Il processo principale gestisce il monitoraggio, MQTT e il tray; il renderer mostra l'UI di configurazione e stato.
@@ -52,7 +52,7 @@ App Electron con architettura main/renderer ben separata. Il processo principale
 
 ### 1. Configurazione MQTT
 - Host, porta, username, password, client ID
-- Topic publish (configurabile, es. `homeassistant/sensor/cpu_temp/state`)
+- Topic publish (configurabile, es. `{prefix}/sensor/cpu_temp/state`)
 - TLS on/off
 - QoS (0/1/2)
 - Retain flag
@@ -67,7 +67,7 @@ App Electron con architettura main/renderer ben separata. Il processo principale
 ### 3. Payload MQTT
 - Modalità "valore grezzo": pubblica solo il numero (es. `"65.3"`)
 - Modalità "JSON": pubblica `{"temperature": 65.3, "state": "warm", "unit": "C"}`
-- Home Assistant auto-discovery (opzionale, MQTT Discovery)
+- Topic prefix globale `{prefix}` con risoluzione al momento del publish
 
 ### 4. Tray Icon
 - Mostra temperatura corrente nel tooltip

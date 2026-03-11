@@ -4,14 +4,15 @@ const schema = {
   mqtt: {
     type: 'object',
     properties: {
-      host:     { type: 'string', default: 'localhost' },
-      port:     { type: 'number', default: 1883 },
-      username: { type: 'string', default: '' },
-      password: { type: 'string', default: '' },
-      clientId: { type: 'string', default: 'pc-monitor' },
-      tls:      { type: 'boolean', default: false },
-      qos:      { type: 'number', default: 0 },
-      retain:   { type: 'boolean', default: false }
+      host:        { type: 'string', default: 'localhost' },
+      port:        { type: 'number', default: 1883 },
+      username:    { type: 'string', default: '' },
+      password:    { type: 'string', default: '' },
+      clientId:    { type: 'string', default: 'pc-monitor' },
+      tls:         { type: 'boolean', default: false },
+      qos:         { type: 'number', default: 0 },
+      retain:      { type: 'boolean', default: false },
+      topicPrefix: { type: 'string', default: 'pc' }
     },
     default: {}
   },

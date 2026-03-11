@@ -1,6 +1,16 @@
 // ─── State ────────────────────────────────────────────────────────────────────
 let availableSensors = []; // full list from main process
 const liveValues = {};     // id → last received value
+let currentPrefix = 'pc'; // mirrors the topicPrefix input
+
+// ─── Topic resolution (mirrors src/main/utils.js) ────────────────────────────
+function resolveTopic(template, prefix) {
+  const p = (prefix || '').replace(/\/+$/, '');
+  const resolved = p
+    ? template.replace(/\{prefix\}/g, p)
+    : template.replace(/\{prefix\}\//g, '');
+  return resolved.replace(/\/\//g, '/');
+}
 
 // ─── Tab navigation ──────────────────────────────────────────────────────────
 document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -59,6 +69,8 @@ function buildSensorCard(s) {
       <div class="form-grid compact">
         <label>Topic</label>
         <input type="text" class="sensor-topic" value="${s.topic}">
+        <label></label>
+        <small class="topic-preview"></small>
         <label>Soglia (${s.unit})</label>
         <input type="number" class="sensor-threshold" value="${s.threshold}" min="0" step="0.1">
         <label>Intervallo (ms)</label>
@@ -67,8 +79,15 @@ function buildSensorCard(s) {
     </div>
   `;
 
-  const checkbox = card.querySelector('.sensor-enabled');
-  const details  = card.querySelector('.sensor-details');
+  const checkbox   = card.querySelector('.sensor-enabled');
+  const details    = card.querySelector('.sensor-details');
+  const topicInput = card.querySelector('.sensor-topic');
+  const preview    = card.querySelector('.topic-preview');
+
+  updateSingleTopicPreview(topicInput, preview);
+
+  topicInput.addEventListener('input', () => updateSingleTopicPreview(topicInput, preview));
+
   checkbox.addEventListener('change', () => {
     card.classList.toggle('enabled', checkbox.checked);
     details.classList.toggle('hidden', !checkbox.checked);
@@ -81,6 +100,19 @@ function buildSensorCard(s) {
 function updateActiveSensorsCount() {
   const count = document.querySelectorAll('.sensor-enabled:checked').length;
   document.getElementById('status-sensors').textContent = `${count} sensori attivi`;
+}
+
+function updateSingleTopicPreview(topicInput, previewEl) {
+  const resolved = resolveTopic(topicInput.value.trim(), currentPrefix);
+  previewEl.textContent = `→ ${resolved}`;
+}
+
+function updateAllTopicPreviews() {
+  document.querySelectorAll('.sensor-card').forEach(card => {
+    const topicInput = card.querySelector('.sensor-topic');
+    const preview    = card.querySelector('.topic-preview');
+    if (topicInput && preview) updateSingleTopicPreview(topicInput, preview);
+  });
 }
 
 function collectSensorConfigs() {
@@ -161,14 +193,15 @@ document.getElementById('btn-save').addEventListener('click', async () => {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function collectMqttSettings() {
   return {
-    host:     document.getElementById('mqtt-host').value.trim(),
-    port:     parseInt(document.getElementById('mqtt-port').value, 10) || 1883,
-    username: document.getElementById('mqtt-username').value.trim(),
-    password: document.getElementById('mqtt-password').value,
-    clientId: document.getElementById('mqtt-clientId').value.trim(),
-    qos:      parseInt(document.getElementById('mqtt-qos').value, 10),
-    tls:      document.getElementById('mqtt-tls').checked,
-    retain:   document.getElementById('mqtt-retain').checked
+    host:        document.getElementById('mqtt-host').value.trim(),
+    port:        parseInt(document.getElementById('mqtt-port').value, 10) || 1883,
+    username:    document.getElementById('mqtt-username').value.trim(),
+    password:    document.getElementById('mqtt-password').value,
+    clientId:    document.getElementById('mqtt-clientId').value.trim(),
+    topicPrefix: document.getElementById('mqtt-topicPrefix').value.trim(),
+    qos:         parseInt(document.getElementById('mqtt-qos').value, 10),
+    tls:         document.getElementById('mqtt-tls').checked,
+    retain:      document.getElementById('mqtt-retain').checked
   };
 }
 
@@ -186,16 +219,24 @@ async function init() {
     window.api.getAvailableSensors()
   ]);
 
-  document.getElementById('mqtt-host').value      = settings.mqtt.host     ?? '';
-  document.getElementById('mqtt-port').value      = settings.mqtt.port     ?? 1883;
-  document.getElementById('mqtt-username').value  = settings.mqtt.username ?? '';
-  document.getElementById('mqtt-password').value  = settings.mqtt.password ?? '';
-  document.getElementById('mqtt-clientId').value  = settings.mqtt.clientId ?? '';
-  document.getElementById('mqtt-qos').value       = settings.mqtt.qos      ?? 0;
-  document.getElementById('mqtt-tls').checked     = settings.mqtt.tls      ?? false;
-  document.getElementById('mqtt-retain').checked  = settings.mqtt.retain   ?? false;
+  document.getElementById('mqtt-host').value        = settings.mqtt.host        ?? '';
+  document.getElementById('mqtt-port').value        = settings.mqtt.port        ?? 1883;
+  document.getElementById('mqtt-username').value    = settings.mqtt.username    ?? '';
+  document.getElementById('mqtt-password').value    = settings.mqtt.password    ?? '';
+  document.getElementById('mqtt-clientId').value    = settings.mqtt.clientId    ?? '';
+  document.getElementById('mqtt-topicPrefix').value = settings.mqtt.topicPrefix ?? 'pc';
+  document.getElementById('mqtt-qos').value         = settings.mqtt.qos         ?? 0;
+  document.getElementById('mqtt-tls').checked       = settings.mqtt.tls         ?? false;
+  document.getElementById('mqtt-retain').checked    = settings.mqtt.retain      ?? false;
   document.getElementById('app-autostart').checked      = settings.app.autostart      ?? false;
   document.getElementById('app-minimizeToTray').checked = settings.app.minimizeToTray ?? true;
+
+  currentPrefix = settings.mqtt.topicPrefix ?? 'pc';
+
+  document.getElementById('mqtt-topicPrefix').addEventListener('input', (e) => {
+    currentPrefix = e.target.value.trim();
+    updateAllTopicPreviews();
+  });
 
   renderSensors(sensors);
 }

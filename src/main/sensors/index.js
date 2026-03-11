@@ -15,7 +15,7 @@ const STATIC_SENSORS = [
     name: 'CPU Usage',
     category: 'cpu',
     unit: '%',
-    defaultTopic: 'pc/sensor/cpu_usage/state',
+    defaultTopic: '{prefix}/sensor/cpu_usage/state',
     defaultThreshold: 1,
     defaultInterval: 1000,
     poll: async () => {
@@ -28,7 +28,7 @@ const STATIC_SENSORS = [
     name: 'CPU Temp (max)',
     category: 'cpu',
     unit: '°C',
-    defaultTopic: 'pc/sensor/cpu_temp_max/state',
+    defaultTopic: '{prefix}/sensor/cpu_temp_max/state',
     defaultThreshold: 0.1,
     defaultInterval: 1000,
     poll: async () => {
@@ -42,7 +42,7 @@ const STATIC_SENSORS = [
     name: 'RAM Used',
     category: 'memory',
     unit: '%',
-    defaultTopic: 'pc/sensor/ram_used_percent/state',
+    defaultTopic: '{prefix}/sensor/ram_used_percent/state',
     defaultThreshold: 1,
     defaultInterval: 2000,
     poll: async () => {
@@ -55,7 +55,7 @@ const STATIC_SENSORS = [
     name: 'RAM Used (GB)',
     category: 'memory',
     unit: 'GB',
-    defaultTopic: 'pc/sensor/ram_used_gb/state',
+    defaultTopic: '{prefix}/sensor/ram_used_gb/state',
     defaultThreshold: 0.1,
     defaultInterval: 2000,
     poll: async () => {
@@ -82,7 +82,7 @@ async function discoverTemperatureSensors() {
           name: `CPU Core ${i} Temp`,
           category: 'cpu',
           unit: '°C',
-          defaultTopic: `pc/sensor/cpu_temp_core${i}/state`,
+          defaultTopic: `{prefix}/sensor/cpu_temp_core${i}/state`,
           defaultThreshold: 0.1,
           defaultInterval: 1000,
           poll: async () => {
@@ -101,7 +101,7 @@ async function discoverTemperatureSensors() {
         name: 'GPU Temp',
         category: 'cpu',
         unit: '°C',
-        defaultTopic: 'pc/sensor/gpu_temp/state',
+        defaultTopic: '{prefix}/sensor/gpu_temp/state',
         defaultThreshold: 0.5,
         defaultInterval: 2000,
         poll: async () => {
@@ -118,7 +118,7 @@ async function discoverTemperatureSensors() {
         name: 'Chipset Temp',
         category: 'cpu',
         unit: '°C',
-        defaultTopic: 'pc/sensor/chipset_temp/state',
+        defaultTopic: '{prefix}/sensor/chipset_temp/state',
         defaultThreshold: 0.5,
         defaultInterval: 5000,
         poll: async () => {
@@ -153,7 +153,7 @@ async function discoverGpuSensors() {
         name: 'GPU Usage',
         category: 'gpu',
         unit: '%',
-        defaultTopic: 'pc/sensor/gpu_usage/state',
+        defaultTopic: '{prefix}/sensor/gpu_usage/state',
         defaultThreshold: 1,
         defaultInterval: 1000,
         poll: async () => readSysInt(busyPath)
@@ -170,7 +170,7 @@ async function discoverGpuSensors() {
         name: 'GPU VRAM Used (GB)',
         category: 'gpu',
         unit: 'GB',
-        defaultTopic: 'pc/sensor/gpu_vram_used_gb/state',
+        defaultTopic: '{prefix}/sensor/gpu_vram_used_gb/state',
         defaultThreshold: 0.1,
         defaultInterval: 2000,
         poll: async () => {
@@ -184,7 +184,7 @@ async function discoverGpuSensors() {
         name: 'GPU VRAM Used (%)',
         category: 'gpu',
         unit: '%',
-        defaultTopic: 'pc/sensor/gpu_vram_used_percent/state',
+        defaultTopic: '{prefix}/sensor/gpu_vram_used_percent/state',
         defaultThreshold: 1,
         defaultInterval: 2000,
         poll: async () => {
@@ -219,7 +219,7 @@ async function discoverGpuSensors() {
           name: TEMP_NAMES[label],
           category: 'gpu',
           unit: '°C',
-          defaultTopic: `pc/sensor/gpu_temp_${label}/state`,
+          defaultTopic: `{prefix}/sensor/gpu_temp_${label}/state`,
           defaultThreshold: 0.5,
           defaultInterval: 2000,
           poll: async () => {
@@ -321,7 +321,7 @@ async function discoverDiskSensors() {
       name: `Disk ${mount} Usage`,
       category: 'disk',
       unit: '%',
-      defaultTopic: `pc/sensor/disk_${safeMount}_use_percent/state`,
+      defaultTopic: `{prefix}/sensor/disk_${safeMount}_use_percent/state`,
       defaultThreshold: 1,
       defaultInterval: 30000,
       poll: async () => {
@@ -335,7 +335,7 @@ async function discoverDiskSensors() {
       name: `Disk ${mount} Free`,
       category: 'disk',
       unit: 'GB',
-      defaultTopic: `pc/sensor/disk_${safeMount}_free_gb/state`,
+      defaultTopic: `{prefix}/sensor/disk_${safeMount}_free_gb/state`,
       defaultThreshold: 0.5,
       defaultInterval: 30000,
       poll: async () => {
@@ -365,7 +365,7 @@ async function discoverNetworkSensors() {
       name: `${ifaceName} Download`,
       category: 'network',
       unit: 'KB/s',
-      defaultTopic: `pc/sensor/net_${safeId}_rx_kbs/state`,
+      defaultTopic: `{prefix}/sensor/net_${safeId}_rx_kbs/state`,
       defaultThreshold: 10,
       defaultInterval: 2000,
       poll: async () => {
@@ -379,7 +379,7 @@ async function discoverNetworkSensors() {
       name: `${ifaceName} Upload`,
       category: 'network',
       unit: 'KB/s',
-      defaultTopic: `pc/sensor/net_${safeId}_tx_kbs/state`,
+      defaultTopic: `{prefix}/sensor/net_${safeId}_tx_kbs/state`,
       defaultThreshold: 10,
       defaultInterval: 2000,
       poll: async () => {

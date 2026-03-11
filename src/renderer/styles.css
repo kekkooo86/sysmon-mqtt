@@ -115,6 +115,7 @@ h1 { font-size: 15px; font-weight: 600; }
 }
 .form-grid.compact { gap: 5px 8px; margin-bottom: 0; }
 label { color: var(--text-muted); }
+.topic-preview { color: var(--text-muted); font-size: 11px; font-family: monospace; }
 
 input[type="text"], input[type="number"], input[type="password"], select {
   background: var(--bg);

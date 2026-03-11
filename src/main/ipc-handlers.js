@@ -4,6 +4,7 @@ const mqttClient     = require('./mqtt-client');
 const sensorManager  = require('./sensor-manager');
 const { discoverSensors } = require('./sensors');
 const autostart      = require('./autostart');
+const { updateActiveSensors } = require('./tray');
 
 let _cachedDefinitions = null;
 
@@ -80,6 +81,7 @@ function registerHandlers(mainWindow) {
     store.set('sensors', configs);
     const defs = await getDefinitions();
     sensorManager.reload(defs, configs, mqttClient);
+    updateActiveSensors(sensorManager.activeCount, mainWindow);
     return { success: true };
   });
 

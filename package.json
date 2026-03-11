@@ -1,12 +1,19 @@
 {
-  "name": "mqtt-cpu-temp-to-homeassistant-toggle-rgb-led",
+  "name": "sysmon-mqtt",
   "version": "1.0.0",
-  "description": "Monitors CPU temperature and publishes via MQTT to Home Assistant to toggle RGB LED",
+  "description": "System sensor monitor that publishes metrics via MQTT",
+  "author": {
+    "name": "kekkooo86",
+    "email": "xtxmotard@gmail.com"
+  },
+  "homepage": "https://github.com/kekkooo86/sysmon-mqtt",
   "main": "src/main/index.js",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder --linux --windows --mac",
     "build:linux": "electron-builder --linux",
+    "install:linux-deb": "npm run build:linux && sudo dpkg -i dist/*.deb",
+    "start:linux-deb-first-time": "npm run install:linux-deb && sysmon-mqtt --no-sandbox",
     "build:win": "electron-builder --windows",
     "build:mac": "electron-builder --mac"
   },

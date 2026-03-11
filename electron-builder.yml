@@ -1,5 +1,5 @@
-appId: com.kekko.cpu-temp-monitor
-productName: CPU Temp Monitor
+appId: com.kekko.sysmon-mqtt
+productName: SysMon-MQTT
 
 directories:
   output: dist

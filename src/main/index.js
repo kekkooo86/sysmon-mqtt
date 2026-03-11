@@ -3,7 +3,7 @@ const path = require('path');
 const store         = require('./store');
 const mqttClient    = require('./mqtt-client');
 const sensorManager = require('./sensor-manager');
-const { createTray, updateMqttStatus } = require('./tray');
+const { createTray, updateMqttStatus, updateActiveSensors } = require('./tray');
 const { registerHandlers, getDefinitions, buildConfigs } = require('./ipc-handlers');
 const autostart     = require('./autostart');
 
@@ -49,6 +49,7 @@ app.whenReady().then(async () => {
   const configs = buildConfigs(defs, store.get('sensors'));
   sensorManager.load(defs, configs, mqttClient);
   sensorManager.start();
+  updateActiveSensors(sensorManager.activeCount, mainWindow);
 
   // Show window on first launch
   if (!store.get('mqtt').host || store.get('mqtt').host === 'localhost') {
