@@ -13,8 +13,8 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 });
 
 // ─── Sensor list rendering ────────────────────────────────────────────────────
-const CATEGORY_LABELS = { cpu: 'CPU', memory: 'Memoria', disk: 'Disco', network: 'Rete' };
-const CATEGORY_ORDER  = ['cpu', 'memory', 'disk', 'network'];
+const CATEGORY_LABELS = { cpu: 'CPU', gpu: 'GPU', memory: 'Memoria', disk: 'Disco', network: 'Rete' };
+const CATEGORY_ORDER  = ['cpu', 'gpu', 'memory', 'disk', 'network'];
 
 function renderSensors(sensors) {
   availableSensors = sensors;

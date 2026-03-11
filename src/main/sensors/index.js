@@ -1,4 +1,9 @@
 const si = require('systeminformation');
+const fs = require('fs/promises');
+const path = require('path');
+
+const DRM_BASE   = '/sys/class/drm';
+const HWMON_BASE = '/sys/class/hwmon';
 
 // ---------------------------------------------------------------------------
 // Static sensors — guaranteed on all platforms
@@ -128,6 +133,174 @@ async function discoverTemperatureSensors() {
   return sensors;
 }
 
+async function discoverGpuSensors() {
+  if (process.platform !== 'linux') return [];
+  const sensors = [];
+
+  try {
+    // ── 1. Find discrete AMD GPU card ─────────────────────────────────────
+    const cards = await readAmdDrmCards();
+    const discrete = cards.find(c => c.vramTotal > 2 * 1024 * 1024 * 1024);
+    if (!discrete) return [];
+
+    const { deviceDir, pciAddr } = discrete;
+
+    // ── 2. Usage ──────────────────────────────────────────────────────────
+    const busyPath = `${deviceDir}/gpu_busy_percent`;
+    if (await readSysInt(busyPath) !== null) {
+      sensors.push({
+        id: 'gpu_usage',
+        name: 'GPU Usage',
+        category: 'gpu',
+        unit: '%',
+        defaultTopic: 'pc/sensor/gpu_usage/state',
+        defaultThreshold: 1,
+        defaultInterval: 1000,
+        poll: async () => readSysInt(busyPath)
+      });
+    }
+
+    // ── 3. VRAM used (GB + %) ─────────────────────────────────────────────
+    const vramUsedPath  = `${deviceDir}/mem_info_vram_used`;
+    const vramTotalPath = `${deviceDir}/mem_info_vram_total`;
+
+    if (await readSysInt(vramUsedPath) !== null) {
+      sensors.push({
+        id: 'gpu_vram_used_gb',
+        name: 'GPU VRAM Used (GB)',
+        category: 'gpu',
+        unit: 'GB',
+        defaultTopic: 'pc/sensor/gpu_vram_used_gb/state',
+        defaultThreshold: 0.1,
+        defaultInterval: 2000,
+        poll: async () => {
+          const v = await readSysInt(vramUsedPath);
+          return v !== null ? round(v / 1073741824, 2) : null;
+        }
+      });
+
+      sensors.push({
+        id: 'gpu_vram_used_percent',
+        name: 'GPU VRAM Used (%)',
+        category: 'gpu',
+        unit: '%',
+        defaultTopic: 'pc/sensor/gpu_vram_used_percent/state',
+        defaultThreshold: 1,
+        defaultInterval: 2000,
+        poll: async () => {
+          const [used, total] = await Promise.all([
+            readSysInt(vramUsedPath),
+            readSysInt(vramTotalPath)
+          ]);
+          if (used === null || !total) return null;
+          return round(used / total * 100, 1);
+        }
+      });
+    }
+
+    // ── 4. Temperatures from hwmon ────────────────────────────────────────
+    const hwmonDir = await findAmdgpuHwmon(pciAddr);
+    if (hwmonDir) {
+      const TEMP_NAMES = {
+        edge:     'GPU Temp (edge)',
+        junction: 'GPU Temp (junction)',
+        mem:      'GPU VRAM Temp'
+      };
+
+      const tempFiles = (await fs.readdir(hwmonDir)).filter(f => /^temp\d+_input$/.test(f));
+      for (const tf of tempFiles) {
+        const labelFile = path.join(hwmonDir, tf.replace('_input', '_label'));
+        const label = await readSysFile(labelFile);
+        if (!label || !TEMP_NAMES[label]) continue;
+
+        const inputPath = path.join(hwmonDir, tf);
+        sensors.push({
+          id: `gpu_temp_${label}`,
+          name: TEMP_NAMES[label],
+          category: 'gpu',
+          unit: '°C',
+          defaultTopic: `pc/sensor/gpu_temp_${label}/state`,
+          defaultThreshold: 0.5,
+          defaultInterval: 2000,
+          poll: async () => {
+            const millideg = await readSysInt(inputPath);
+            return millideg !== null ? round(millideg / 1000, 1) : null;
+          }
+        });
+      }
+    }
+  } catch (_) {
+    // GPU sensors not available — skip silently
+  }
+
+  return sensors;
+}
+
+// ── sysfs helpers ────────────────────────────────────────────────────────────
+
+async function readSysFile(filePath) {
+  try {
+    return (await fs.readFile(filePath, 'utf8')).trim();
+  } catch {
+    return null;
+  }
+}
+
+async function readSysInt(filePath) {
+  const v = await readSysFile(filePath);
+  if (v === null) return null;
+  const n = parseInt(v, 10);
+  return isNaN(n) ? null : n;
+}
+
+async function readAmdDrmCards() {
+  let entries;
+  try {
+    entries = await fs.readdir(DRM_BASE);
+  } catch {
+    return [];
+  }
+
+  const cards = [];
+  for (const name of entries.filter(e => /^card\d+$/.test(e))) {
+    const deviceDir = path.join(DRM_BASE, name, 'device');
+    const vramTotal = await readSysInt(path.join(deviceDir, 'mem_info_vram_total'));
+    if (vramTotal === null) continue;
+
+    // Resolve PCI address via symlink: .../device → ../../0000:03:00.0
+    let pciAddr = null;
+    try {
+      const link = await fs.readlink(path.join(DRM_BASE, name, 'device'));
+      pciAddr = link.split('/').pop();
+    } catch { /* ignore */ }
+
+    cards.push({ name, deviceDir, vramTotal, pciAddr });
+  }
+  return cards;
+}
+
+async function findAmdgpuHwmon(pciAddr) {
+  let entries;
+  try {
+    entries = await fs.readdir(HWMON_BASE);
+  } catch {
+    return null;
+  }
+
+  for (const name of entries) {
+    const hwmonDir = path.join(HWMON_BASE, name);
+    if (await readSysFile(path.join(hwmonDir, 'name')) !== 'amdgpu') continue;
+    if (!pciAddr) return hwmonDir; // fallback: return first amdgpu hwmon
+
+    try {
+      const link = await fs.readlink(path.join(hwmonDir, 'device'));
+      if (link.split('/').pop() === pciAddr) return hwmonDir;
+    } catch { /* ignore */ }
+  }
+  return null;
+}
+
+
 async function discoverDiskSensors() {
   const drives = await si.fsSize();
   const sensors = [];
@@ -220,12 +393,13 @@ async function discoverNetworkSensors() {
 }
 
 async function discoverSensors() {
-  const [tempSensors, diskSensors, netSensors] = await Promise.all([
+  const [tempSensors, gpuSensors, diskSensors, netSensors] = await Promise.all([
     discoverTemperatureSensors(),
+    discoverGpuSensors(),
     discoverDiskSensors(),
     discoverNetworkSensors()
   ]);
-  return [...STATIC_SENSORS, ...tempSensors, ...diskSensors, ...netSensors];
+  return [...STATIC_SENSORS, ...tempSensors, ...gpuSensors, ...diskSensors, ...netSensors];
 }
 
 // ---------------------------------------------------------------------------
