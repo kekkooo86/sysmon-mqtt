@@ -15,18 +15,31 @@ Electron desktop app that monitors system sensors (CPU, GPU, RAM, disk, network)
 
 ## Installation (Linux `.deb`)
 
-### 1. Download the package
+### Quick install — first time
 
-Grab the latest `.deb` from the [Releases](../../releases) page, or build it yourself:
+If you're building and running for the first time, a single command handles everything: build, install the `.deb`, and launch the app:
 
+```bash
+npm run start:linux-deb-first-time
+```
+
+This is equivalent to:
+1. `npm run build:linux` — builds the `.deb` package
+2. `sudo dpkg -i dist/*.deb` — installs it system-wide
+3. `sysmon-mqtt --no-sandbox` — launches the app
+
+### Manual steps
+
+Alternatively, run each step individually.
+
+**Build:**
 ```bash
 npm install
 npm run build:linux
 # output: dist/sysmon-mqtt_<version>_amd64.deb
 ```
 
-### 2. Install with dpkg
-
+**Install:**
 ```bash
 sudo dpkg -i dist/sysmon-mqtt_1.0.0_amd64.deb
 ```
@@ -37,7 +50,7 @@ If there are missing dependencies, fix them with:
 sudo apt-get install -f
 ```
 
-### 3. First launch
+**Launch:**
 
 Electron on Linux requires the `--no-sandbox` flag when running as a regular user without kernel-level user namespaces:
 
@@ -46,6 +59,14 @@ sysmon-mqtt --no-sandbox
 ```
 
 > The app appears in the system tray. Click the tray icon to open the Settings window and configure your MQTT broker.
+
+### Rebuild and reinstall
+
+To rebuild and reinstall after code changes (skips the first launch):
+
+```bash
+npm run install:linux-deb
+```
 
 ---
 
