@@ -1,0 +1,33 @@
+appId: com.kekko.cpu-temp-monitor
+productName: CPU Temp Monitor
+
+directories:
+  output: dist
+
+files:
+  - src/**/*
+  - assets/**/*
+  - package.json
+  - node_modules/**/*
+
+linux:
+  target:
+    - target: AppImage
+    - target: deb
+  icon: assets/icon.png
+  category: Utility
+
+win:
+  target:
+    - target: nsis
+  icon: assets/icon.png
+
+mac:
+  target:
+    - target: dmg
+  icon: assets/icon.png
+  darkModeSupport: true
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

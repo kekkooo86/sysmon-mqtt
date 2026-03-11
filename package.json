@@ -1,0 +1,23 @@
+{
+  "name": "mqtt-cpu-temp-to-homeassistant-toggle-rgb-led",
+  "version": "1.0.0",
+  "description": "Monitors CPU temperature and publishes via MQTT to Home Assistant to toggle RGB LED",
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --linux --windows --mac",
+    "build:linux": "electron-builder --linux",
+    "build:win": "electron-builder --windows",
+    "build:mac": "electron-builder --mac"
+  },
+  "private": true,
+  "devDependencies": {
+    "electron": "^29.0.0",
+    "electron-builder": "^24.0.0"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0",
+    "mqtt": "^5.3.0",
+    "systeminformation": "^5.22.0"
+  }
+}
