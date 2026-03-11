@@ -19,6 +19,20 @@ const STATIC_SENSORS = [
     }
   },
   {
+    id: 'cpu_temp_max',
+    name: 'CPU Temp (max)',
+    category: 'cpu',
+    unit: '°C',
+    defaultTopic: 'pc/sensor/cpu_temp_max/state',
+    defaultThreshold: 0.1,
+    defaultInterval: 1000,
+    poll: async () => {
+      const d = await si.cpuTemperature();
+      const val = (d.max != null && d.max > 0) ? d.max : d.main;
+      return (val != null && val > 0) ? round(val, 1) : null;
+    }
+  },
+  {
     id: 'ram_used_percent',
     name: 'RAM Used',
     category: 'memory',
@@ -47,14 +61,86 @@ const STATIC_SENSORS = [
 ];
 
 // ---------------------------------------------------------------------------
-// Dynamic sensors — discovered at runtime (disk mounts, network interfaces)
+// Dynamic sensors — discovered at runtime (temperatures, disk, network)
 // ---------------------------------------------------------------------------
+
+async function discoverTemperatureSensors() {
+  const sensors = [];
+  try {
+    const data = await si.cpuTemperature();
+
+    // Individual core temperatures
+    if (Array.isArray(data.cores) && data.cores.length > 1) {
+      data.cores.forEach((_, i) => {
+        sensors.push({
+          id: `cpu_temp_core${i}`,
+          name: `CPU Core ${i} Temp`,
+          category: 'cpu',
+          unit: '°C',
+          defaultTopic: `pc/sensor/cpu_temp_core${i}/state`,
+          defaultThreshold: 0.1,
+          defaultInterval: 1000,
+          poll: async () => {
+            const d = await si.cpuTemperature();
+            const val = d.cores?.[i];
+            return (val != null && val > 0) ? round(val, 1) : null;
+          }
+        });
+      });
+    }
+
+    // GPU temperature if available
+    if (data.gpu != null && data.gpu > 0) {
+      sensors.push({
+        id: 'gpu_temp',
+        name: 'GPU Temp',
+        category: 'cpu',
+        unit: '°C',
+        defaultTopic: 'pc/sensor/gpu_temp/state',
+        defaultThreshold: 0.5,
+        defaultInterval: 2000,
+        poll: async () => {
+          const d = await si.cpuTemperature();
+          return (d.gpu != null && d.gpu > 0) ? round(d.gpu, 1) : null;
+        }
+      });
+    }
+
+    // Chipset temperature if available
+    if (data.chipset != null && data.chipset > 0) {
+      sensors.push({
+        id: 'chipset_temp',
+        name: 'Chipset Temp',
+        category: 'cpu',
+        unit: '°C',
+        defaultTopic: 'pc/sensor/chipset_temp/state',
+        defaultThreshold: 0.5,
+        defaultInterval: 5000,
+        poll: async () => {
+          const d = await si.cpuTemperature();
+          return (d.chipset != null && d.chipset > 0) ? round(d.chipset, 1) : null;
+        }
+      });
+    }
+  } catch (_) {
+    // Temperature sensors not available on this platform — skip silently
+  }
+  return sensors;
+}
 
 async function discoverDiskSensors() {
   const drives = await si.fsSize();
   const sensors = [];
+
+  // Exclude non-user-facing virtual/system mounts
+  const EXCLUDED_PREFIXES = ['/sys', '/proc', '/dev', '/run', '/snap', '/boot/efi', '/boot/grub'];
+  const EXCLUDED_TYPES    = ['squashfs', 'tmpfs', 'devtmpfs', 'devfs', 'efivarfs'];
+
   for (const drive of drives) {
     if (!drive.size || drive.size === 0) continue;
+    if (EXCLUDED_TYPES.includes(drive.type)) continue;
+    if (EXCLUDED_PREFIXES.some(p => drive.mount.startsWith(p))) continue;
+
     const safeMount = drive.mount.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+|_+$/g, '') || 'root';
     const mount = drive.mount;
     sensors.push({
@@ -92,8 +178,13 @@ async function discoverDiskSensors() {
 async function discoverNetworkSensors() {
   const ifaces = await si.networkInterfaces();
   const sensors = [];
+
+  // Exclude loopback and common virtual/container interfaces
+  const EXCLUDED_PREFIXES = ['lo', 'docker', 'veth', 'virbr', 'br-', 'tun', 'tap', 'vmnet'];
+
   for (const iface of ifaces) {
-    if (iface.internal || !iface.operstate || iface.operstate === 'down') continue;
+    if (iface.internal) continue;
+    if (EXCLUDED_PREFIXES.some(p => iface.iface.startsWith(p))) continue;
     const safeId = iface.iface.replace(/[^a-zA-Z0-9]/g, '_');
     const ifaceName = iface.iface;
     sensors.push({
@@ -129,11 +220,12 @@ async function discoverNetworkSensors() {
 }
 
 async function discoverSensors() {
-  const [diskSensors, netSensors] = await Promise.all([
+  const [tempSensors, diskSensors, netSensors] = await Promise.all([
+    discoverTemperatureSensors(),
     discoverDiskSensors(),
     discoverNetworkSensors()
   ]);
-  return [...STATIC_SENSORS, ...diskSensors, ...netSensors];
+  return [...STATIC_SENSORS, ...tempSensors, ...diskSensors, ...netSensors];
 }
 
 // ---------------------------------------------------------------------------
