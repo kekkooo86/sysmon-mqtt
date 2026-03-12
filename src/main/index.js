@@ -1,5 +1,9 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('path');
+
+// Disable GPU compositing — eliminates the separate GPU process that Electron
+// spawns even for hidden windows, which can consume 5-10 % CPU for nothing.
+app.disableHardwareAcceleration();
 const store         = require('./store');
 const mqttClient    = require('./mqtt-client');
 const sensorManager = require('./sensor-manager');
@@ -18,7 +22,8 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: true   // throttle renderer JS when window is hidden
     }
   });
 

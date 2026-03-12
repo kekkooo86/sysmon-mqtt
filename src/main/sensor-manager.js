@@ -2,21 +2,21 @@ const { EventEmitter } = require('events');
 const store            = require('./store');
 const { resolveTopic } = require('./utils');
 
-// Minimum and maximum tick boundaries (ms).
-// The actual tick is computed dynamically as max(MIN_TICK_MS, floor(minInterval / 2))
-// so the timer fires twice per shortest sensor interval, giving one retry slot
-// against Node.js timer jitter without over-spinning when all sensors are slow.
-const MIN_TICK_MS = 250;
-const MAX_TICK_MS = 2000;
-
+/**
+ * SensorManager — per-sensor setTimeout chains instead of a global setInterval.
+ *
+ * Why: a shared tick timer at half the shortest interval fires N times/second
+ * even when no sensor is due (idle wakeups). With per-sensor timers each sensor
+ * sleeps exactly until its next poll, keeping the Node.js event loop quiet
+ * between readings.
+ */
 class SensorManager extends EventEmitter {
   constructor() {
     super();
-    this._timer       = null;
     this._sensors     = [];
     this._mqttClient  = null;
-    this._ticking     = false;
     this._topicPrefix = '';
+    this._active      = false;
   }
 
   // Load sensor definitions + user configs, bind mqtt client
@@ -32,7 +32,8 @@ class SensorManager extends EventEmitter {
         def,
         cfg,
         lastPolled:    0,
-        lastPublished: null
+        lastPublished: null,
+        _handle:       null   // per-sensor timer handle
       });
     }
   }
@@ -40,20 +41,24 @@ class SensorManager extends EventEmitter {
   start() {
     this.stop();
     if (this._sensors.length === 0) return;
-
-    // Fire at half the shortest active sensor interval so each sensor gets
-    // two tick opportunities per cycle, absorbing Node.js timer jitter.
-    const minInterval = this._sensors.reduce((m, s) => Math.min(m, s.cfg.interval), Infinity);
-    const tickMs      = Math.max(MIN_TICK_MS, Math.min(MAX_TICK_MS, Math.floor(minInterval / 2)));
-
-    this._timer = setInterval(() => this._tick(), tickMs);
+    this._active = true;
+    // Fire each sensor immediately on first start, then on its own schedule.
+    for (const entry of this._sensors) {
+      this._schedule(entry, 0);
+    }
   }
 
   stop() {
-    if (this._timer) {
-      clearInterval(this._timer);
-      this._timer = null;
+    this._active = false;
+    for (const entry of this._sensors) {
+      if (entry._handle !== null) {
+        clearTimeout(entry._handle);
+        entry._handle = null;
+      }
     }
+    // Do NOT clear this._sensors here — start() calls stop() internally and
+    // then immediately iterates this._sensors to schedule timers. Clearing
+    // sensors is load()'s responsibility.
   }
 
   reload(definitions, configs, mqttClient) {
@@ -66,19 +71,25 @@ class SensorManager extends EventEmitter {
     return this._sensors.length;
   }
 
-  async _tick() {
-    if (this._ticking) return; // skip if previous tick is still running
-    this._ticking = true;
-    try {
-      const now = Date.now();
-      for (const entry of this._sensors) {
-        if (now - entry.lastPolled < entry.cfg.interval) continue;
-        entry.lastPolled = now;
-        this._pollSensor(entry);
-      }
-    } finally {
-      this._ticking = false;
-    }
+  // Schedule (or re-schedule) a sensor's next poll after delayMs.
+  _schedule(entry, delayMs) {
+    entry._handle = setTimeout(() => {
+      entry._handle = null;
+      if (!this._active) return;
+
+      const pollStart  = Date.now();
+      entry.lastPolled = pollStart;
+
+      this._pollSensor(entry).finally(() => {
+        // Guard against stop()/reload() that ran while the poll was in flight.
+        if (!this._active || !this._sensors.includes(entry)) return;
+
+        // Schedule the next poll so the *interval* is measured from when this
+        // poll started, keeping drift minimal even if the poll takes a few ms.
+        const elapsed = Date.now() - pollStart;
+        this._schedule(entry, Math.max(0, entry.cfg.interval - elapsed));
+      });
+    }, delayMs);
   }
 
   async _pollSensor(entry) {

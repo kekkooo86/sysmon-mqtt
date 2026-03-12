@@ -47,10 +47,12 @@ function runPS(script, timeoutMs = 5000) {
 function httpGetJson(url, timeoutMs = 4000) {
   return new Promise((resolve) => {
     const req = http.get(url, { timeout: timeoutMs }, (res) => {
-      let data = '';
-      res.on('data', chunk => { data += chunk; });
+      // Collect raw Buffers instead of concatenating strings on every chunk —
+      // avoids O(n²) string copies for large LHM responses (50-200 KB).
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
       res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
         catch { resolve(null); }
       });
     });
@@ -271,12 +273,22 @@ const BACKENDS = [
   { name: 'CoreTemp',                  fn: () => readFromCoreTemp()                               },
 ];
 
-// Cache shared across all callers: avoids spawning N PowerShell processes per tick
-// when multiple sensors read from the same backend in the same polling window.
-const READINGS_CACHE_TTL = 900; // ms — shorter than any typical 1 s poll interval
+// How long to keep the raw backend readings in cache.
+// LHM itself refreshes sensors at ~1 s; caching for 1800 ms means we fetch the
+// JSON from LHM roughly every other sensor tick (every ~2 s) rather than every
+// tick, halving both the HTTP overhead and the JSON-parse cost.
+// At the expense of up to ~2 s data-latency — perfectly acceptable for a
+// temperature / usage monitor.
+const READINGS_CACHE_TTL = 1800; // ms
 let _readingsCache     = null;
 let _readingsCacheTime = 0;
 let _readingsCachePromise = null; // deduplicate concurrent calls during the same tick
+
+// Secondary cache: by-device grouping derived from the readings cache.
+// readByDevice() is called once per enabled sensor per tick, so without this
+// cache each sensor would rebuild the same object from the same underlying data.
+let _byDeviceCache     = null;
+let _byDeviceCacheTime = 0;
 
 /**
  * Returns all sensor readings from the first available backend.
@@ -303,11 +315,16 @@ async function readAllSensors() {
         _readingsCache     = { source: backend.name, readings: data };
         _readingsCacheTime = Date.now();
         _readingsCachePromise = null;
+        // Invalidate the by-device cache whenever raw readings are refreshed
+        _byDeviceCache     = null;
+        _byDeviceCacheTime = 0;
         return _readingsCache;
       }
     }
     _readingsCache     = null;
     _readingsCacheTime = Date.now(); // cache the "no backend" result too
+    _byDeviceCache     = null;
+    _byDeviceCacheTime = 0;
     _readingsCachePromise = null;
     return null;
   })();
@@ -403,9 +420,14 @@ async function readByType(type) {
 /**
  * Returns readings grouped by hardware device name.
  * e.g. { 'Samsung SSD 990 PRO 2TB': [...], 'Ethernet': [...] }
- * Uses the shared cache — no extra HTTP calls.
+ * Cached independently — avoids rebuilding the same object on every sensor tick
+ * when multiple sensors share the same underlying backend data.
  */
 async function readByDevice() {
+  const now = Date.now();
+  if (_byDeviceCache && (now - _byDeviceCacheTime) < READINGS_CACHE_TTL) {
+    return _byDeviceCache;
+  }
   const result = await readAllSensors();
   if (!result) return null;
   const byDevice = {};
@@ -414,7 +436,9 @@ async function readByDevice() {
     if (!byDevice[dev]) byDevice[dev] = [];
     byDevice[dev].push(r);
   }
-  return byDevice;
+  _byDeviceCache     = byDevice;
+  _byDeviceCacheTime = Date.now();
+  return _byDeviceCache;
 }
 
 module.exports = { readAllSensors, readTemperatures, readCpuTemp, readFirstMatch, readByType, readByDevice, isAvailable };
