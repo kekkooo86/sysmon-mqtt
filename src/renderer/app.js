@@ -25,6 +25,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 // ─── Sensor list rendering ────────────────────────────────────────────────────
 const CATEGORY_LABELS = { cpu: 'CPU', gpu: 'GPU', memory: 'Memoria', disk: 'Disco', network: 'Rete' };
 const CATEGORY_ORDER  = ['cpu', 'gpu', 'memory', 'disk', 'network'];
+const SOURCE_LABELS   = { lhm: 'LHM', si: 'si', 'win-api': 'WinAPI', sysfs: 'sysfs' };
 
 function renderSensors(sensors) {
   availableSensors = sensors;
@@ -62,6 +63,7 @@ function buildSensorCard(s) {
         <span></span>
       </label>
       <span class="sensor-name">${s.name}</span>
+      <span class="sensor-source source-${s.source || 'si'}" title="Sorgente dati">${SOURCE_LABELS[s.source] || (s.source || 'si')}</span>
       <span class="sensor-unit">${s.unit}</span>
       <span class="sensor-live" id="live-${s.id}">—</span>
     </div>

@@ -83,26 +83,31 @@ const LHM_CATEGORY_TYPE = {
   data:         'Data',   // memory / storage in GB, MB, etc.
 };
 
-function lhmExtractReadings(node, readings = [], parentType = null) {
+function lhmExtractReadings(node, readings = [], parentType = null, parentDevice = null) {
   if (!node) return readings;
+
+  const children = Array.isArray(node.Children) ? node.Children : [];
 
   // Determine type context from category nodes ("Temperatures", "Loads", …)
   const typeFromText = LHM_CATEGORY_TYPE[node.Text?.toLowerCase()];
   const currentType  = typeFromText || parentType;
 
+  // Identify hardware device nodes: not a category themselves, but have children that are categories.
+  // e.g. "Samsung SSD 990 PRO 2TB", "Ethernet", "Intel Core i9-…"
+  const isDevice = !typeFromText && children.some(c => !!LHM_CATEGORY_TYPE[(c.Text || '').toLowerCase()]);
+  const currentDevice = isDevice ? (node.Text || parentDevice) : parentDevice;
+
   // Leaf sensor node: has a non-empty Value and no children
-  if (node.Value && node.Value !== '-' && Array.isArray(node.Children) && node.Children.length === 0) {
+  if (node.Value && node.Value !== '-' && children.length === 0) {
     // Handle locale-specific decimal comma ("43,5 °C" → 43.5)
     const valueStr = node.Value.replace(',', '.').replace(/[^\d.\-]/g, '');
     const value    = parseFloat(valueStr);
     if (!isNaN(value) && currentType) {
-      readings.push({ type: currentType, label: node.Text, value });
+      readings.push({ type: currentType, label: node.Text, value, device: currentDevice });
     }
   }
 
-  if (Array.isArray(node.Children)) {
-    for (const child of node.Children) lhmExtractReadings(child, readings, currentType);
-  }
+  for (const child of children) lhmExtractReadings(child, readings, currentType, currentDevice);
   return readings;
 }
 
@@ -395,5 +400,22 @@ async function readByType(type) {
   return result.readings.filter(r => r.type === type && r.value != null && !isNaN(r.value));
 }
 
-module.exports = { readAllSensors, readTemperatures, readCpuTemp, readFirstMatch, readByType, isAvailable };
+/**
+ * Returns readings grouped by hardware device name.
+ * e.g. { 'Samsung SSD 990 PRO 2TB': [...], 'Ethernet': [...] }
+ * Uses the shared cache — no extra HTTP calls.
+ */
+async function readByDevice() {
+  const result = await readAllSensors();
+  if (!result) return null;
+  const byDevice = {};
+  for (const r of result.readings) {
+    const dev = r.device || '_unknown';
+    if (!byDevice[dev]) byDevice[dev] = [];
+    byDevice[dev].push(r);
+  }
+  return byDevice;
+}
+
+module.exports = { readAllSensors, readTemperatures, readCpuTemp, readFirstMatch, readByType, readByDevice, isAvailable };
 

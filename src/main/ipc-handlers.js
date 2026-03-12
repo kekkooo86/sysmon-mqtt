@@ -73,7 +73,8 @@ function registerHandlers(mainWindow) {
       ...cfg,
       name:     defs[i].name,
       category: defs[i].category,
-      unit:     defs[i].unit
+      unit:     defs[i].unit,
+      source:   defs[i].source
     }));
   });
 
@@ -85,9 +86,12 @@ function registerHandlers(mainWindow) {
     return { success: true };
   });
 
-  // Forward sensor updates to renderer
+  // Forward sensor updates to renderer only when the window is actually visible.
+  // Skipping IPC when hidden avoids V8 serialization + pipe write overhead on every tick.
   sensorManager.on('sensor-update', (data) => {
-    if (!mainWindow.isDestroyed()) mainWindow.webContents.send('sensor-update', data);
+    if (!mainWindow.isDestroyed() && mainWindow.isVisible()) {
+      mainWindow.webContents.send('sensor-update', data);
+    }
   });
 
   // Forward MQTT status to renderer

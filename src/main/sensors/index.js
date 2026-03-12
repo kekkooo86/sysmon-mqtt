@@ -105,6 +105,7 @@ const STATIC_SENSORS = [
     name: 'CPU Usage',
     category: 'cpu',
     unit: '%',
+    source: process.platform === 'win32' ? 'lhm' : 'si',
     defaultTopic: '{prefix}/sensor/cpu_usage/state',
     defaultThreshold: 1,
     defaultInterval: 1000,
@@ -124,6 +125,7 @@ const STATIC_SENSORS = [
     name: 'CPU Temp (max)',
     category: 'cpu',
     unit: '°C',
+    source: process.platform === 'win32' ? 'lhm' : 'si',
     defaultTopic: '{prefix}/sensor/cpu_temp_max/state',
     defaultThreshold: 0.1,
     defaultInterval: 1000,
@@ -144,6 +146,7 @@ const STATIC_SENSORS = [
     name: 'RAM Used',
     category: 'memory',
     unit: '%',
+    source: process.platform === 'win32' ? 'lhm' : 'si',
     defaultTopic: '{prefix}/sensor/ram_used_percent/state',
     defaultThreshold: 1,
     defaultInterval: 2000,
@@ -163,6 +166,7 @@ const STATIC_SENSORS = [
     name: 'RAM Used (GB)',
     category: 'memory',
     unit: 'GB',
+    source: process.platform === 'win32' ? 'lhm' : 'si',
     defaultTopic: '{prefix}/sensor/ram_used_gb/state',
     defaultThreshold: 0.1,
     defaultInterval: 2000,
@@ -200,6 +204,7 @@ async function discoverTemperatureSensors() {
             name: `CPU Core ${i} Temp`,
             category: 'cpu',
             unit: '°C',
+            source: 'lhm',
             defaultTopic: `{prefix}/sensor/cpu_temp_core${i}/state`,
             defaultThreshold: 0.1,
             defaultInterval: 1000,
@@ -220,6 +225,7 @@ async function discoverTemperatureSensors() {
             name: 'Chipset Temp',
             category: 'cpu',
             unit: '°C',
+            source: 'lhm',
             defaultTopic: '{prefix}/sensor/chipset_temp/state',
             defaultThreshold: 0.5,
             defaultInterval: 5000,
@@ -247,6 +253,7 @@ async function discoverTemperatureSensors() {
           name: `CPU Core ${i} Temp`,
           category: 'cpu',
           unit: '°C',
+          source: 'si',
           defaultTopic: `{prefix}/sensor/cpu_temp_core${i}/state`,
           defaultThreshold: 0.1,
           defaultInterval: 1000,
@@ -266,6 +273,7 @@ async function discoverTemperatureSensors() {
         name: 'GPU Temp',
         category: 'cpu',
         unit: '°C',
+        source: 'si',
         defaultTopic: '{prefix}/sensor/gpu_temp/state',
         defaultThreshold: 0.5,
         defaultInterval: 2000,
@@ -283,6 +291,7 @@ async function discoverTemperatureSensors() {
         name: 'Chipset Temp',
         category: 'cpu',
         unit: '°C',
+        source: 'si',
         defaultTopic: '{prefix}/sensor/chipset_temp/state',
         defaultThreshold: 0.5,
         defaultInterval: 5000,
@@ -325,6 +334,7 @@ async function discoverGpuSensorsLinux() {
         name: 'GPU Usage',
         category: 'gpu',
         unit: '%',
+        source: 'sysfs',
         defaultTopic: '{prefix}/sensor/gpu_usage/state',
         defaultThreshold: 1,
         defaultInterval: 1000,
@@ -342,6 +352,7 @@ async function discoverGpuSensorsLinux() {
         name: 'GPU VRAM Used (GB)',
         category: 'gpu',
         unit: 'GB',
+        source: 'sysfs',
         defaultTopic: '{prefix}/sensor/gpu_vram_used_gb/state',
         defaultThreshold: 0.1,
         defaultInterval: 2000,
@@ -356,6 +367,7 @@ async function discoverGpuSensorsLinux() {
         name: 'GPU VRAM Used (%)',
         category: 'gpu',
         unit: '%',
+        source: 'sysfs',
         defaultTopic: '{prefix}/sensor/gpu_vram_used_percent/state',
         defaultThreshold: 1,
         defaultInterval: 2000,
@@ -391,6 +403,7 @@ async function discoverGpuSensorsLinux() {
           name: TEMP_NAMES[label],
           category: 'gpu',
           unit: '°C',
+          source: 'sysfs',
           defaultTopic: `{prefix}/sensor/gpu_temp_${label}/state`,
           defaultThreshold: 0.5,
           defaultInterval: 2000,
@@ -436,6 +449,7 @@ async function discoverGpuSensorsWindows() {
       name: 'GPU Usage',
       category: 'gpu',
       unit: '%',
+      source: 'win-api',
       defaultTopic: '{prefix}/sensor/gpu_usage/state',
       defaultThreshold: 1,
       defaultInterval: 2000,
@@ -448,54 +462,159 @@ async function discoverGpuSensorsWindows() {
   return sensors;
 }
 
-// Discover GPU sensors directly from LHM readings (no process spawning).
+// Discover GPU sensors directly from LHM using device-aware readings.
+// Handles both AMD (D3D-based labels) and NVIDIA (GPU-labelled sensors).
+const GPU_DEVICE_RE = /geforce|radeon|rtx|gtx|rx\s*\d|vega|navi|polaris|quadro|tesla|intel.*arc|uhd.*graphics|iris.*graphics/i;
+
+// Priority-ordered patterns for GPU usage: prefer native GPU Core, fall back to D3D 3D
+const GPU_USAGE_PATTERNS = [/^GPU Core$/i, /^GPU$/i, /^D3D 3D$/i, /^D3D/i];
+
+function escapeRe(s) {
+  return new RegExp(`^${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+}
+
 async function discoverGpuSensorsFromLhm() {
   const sensors = [];
   try {
-    const [temps, loads] = await Promise.all([
-      hwinfo.readByType('Temperature'),
-      hwinfo.readByType('Load'),
-    ]);
+    const byDevice = await hwinfo.readByDevice();
+    if (!byDevice) return sensors;
 
-    const gpuTemps  = temps.filter(t => /GPU/i.test(t.label) && t.value > 0);
-    const gpuLoads  = loads.filter(l => /GPU/i.test(l.label) && l.value >= 0);
+    for (const [deviceName, readings] of Object.entries(byDevice)) {
+      if (!GPU_DEVICE_RE.test(deviceName)) continue;
 
-    for (const t of gpuTemps) {
-      const label = t.label;
-      const safeId = label.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
-      sensors.push({
-        id: `gpu_temp_${safeId}`,
-        name: label,
-        category: 'gpu',
-        unit: '°C',
-        defaultTopic: `{prefix}/sensor/gpu_temp_${safeId}/state`,
-        defaultThreshold: 0.5,
-        defaultInterval: 2000,
-        poll: async () => {
-          const all = await hwinfo.readByType('Temperature');
-          const r = all.find(x => x.label === label);
-          return r && r.value > 0 ? round(r.value, 1) : null;
-        }
+      const devId = deviceName.toLowerCase()
+        .replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+
+      const makePoller = (type, labelRe) => async () => {
+        const dev = await hwinfo.readByDevice();
+        if (!dev || !dev[deviceName]) return null;
+        const r = dev[deviceName].find(x => x.type === type && labelRe.test(x.label));
+        return r != null ? round(r.value, 1) : null;
+      };
+
+      // ── Usage % ──────────────────────────────────────────────────────────
+      const usageReading = GPU_USAGE_PATTERNS
+        .map(re => readings.find(r => r.type === 'Load' && re.test(r.label)))
+        .find(Boolean);
+
+      if (usageReading) {
+        sensors.push({
+          id: `gpu_${devId}_usage`,
+          name: `${deviceName} Usage`,
+          category: 'gpu',
+          unit: '%',
+          source: 'lhm',
+          defaultTopic: `{prefix}/sensor/gpu_${devId}_usage/state`,
+          defaultThreshold: 1,
+          defaultInterval: 2000,
+          poll: makePoller('Load', escapeRe(usageReading.label))
+        });
+      }
+
+      // ── All temperatures ──────────────────────────────────────────────────
+      // Priority order for the "main" temp shown first; then expose all others
+      const TEMP_PRIO_RE = [/^GPU Core$/i, /^GPU$/i, /^GPU Package$/i, /^Edge$/i];
+      const allTemps = readings.filter(r => r.type === 'Temperature' && r.value > 0);
+
+      // Sort: priority temps first, then alphabetically
+      allTemps.sort((a, b) => {
+        const pa = TEMP_PRIO_RE.findIndex(re => re.test(a.label));
+        const pb = TEMP_PRIO_RE.findIndex(re => re.test(b.label));
+        const ra = pa === -1 ? 99 : pa;
+        const rb = pb === -1 ? 99 : pb;
+        return ra !== rb ? ra - rb : a.label.localeCompare(b.label);
       });
-    }
 
-    for (const l of gpuLoads) {
-      const label = l.label;
-      const safeId = label.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
-      sensors.push({
-        id: `gpu_load_${safeId}`,
-        name: label,
-        category: 'gpu',
-        unit: '%',
-        defaultTopic: `{prefix}/sensor/gpu_load_${safeId}/state`,
-        defaultThreshold: 1,
-        defaultInterval: 2000,
-        poll: async () => {
-          const all = await hwinfo.readByType('Load');
-          const r = all.find(x => x.label === label);
-          return r != null ? round(r.value, 1) : null;
+      for (const t of allTemps) {
+        const safeTempId = t.label.toLowerCase()
+          .replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+        sensors.push({
+          id: `gpu_${devId}_temp_${safeTempId}`,
+          name: `${deviceName} ${t.label}`,
+          category: 'gpu',
+          unit: '°C',
+          source: 'lhm',
+          defaultTopic: `{prefix}/sensor/gpu_${devId}_temp_${safeTempId}/state`,
+          defaultThreshold: 0.5,
+          defaultInterval: 2000,
+          poll: makePoller('Temperature', escapeRe(t.label))
+        });
+      }
+
+      // ── Fan speed ─────────────────────────────────────────────────────────
+      const fanReading = readings.find(r => r.type === 'Fan' && /GPU Fan|Fan/i.test(r.label));
+      if (fanReading) {
+        sensors.push({
+          id: `gpu_${devId}_fan_rpm`,
+          name: `${deviceName} Fan`,
+          category: 'gpu',
+          unit: 'RPM',
+          source: 'lhm',
+          defaultTopic: `{prefix}/sensor/gpu_${devId}_fan_rpm/state`,
+          defaultThreshold: 50,
+          defaultInterval: 2000,
+          poll: makePoller('Fan', escapeRe(fanReading.label))
+        });
+      }
+
+      // ── Power (W) ─────────────────────────────────────────────────────────
+      const powerReading = readings.find(r => r.type === 'Power' && /GPU Package|GPU Core|GPU$/i.test(r.label));
+      if (powerReading) {
+        sensors.push({
+          id: `gpu_${devId}_power_w`,
+          name: `${deviceName} Power`,
+          category: 'gpu',
+          unit: 'W',
+          source: 'lhm',
+          defaultTopic: `{prefix}/sensor/gpu_${devId}_power_w/state`,
+          defaultThreshold: 1,
+          defaultInterval: 2000,
+          poll: makePoller('Power', escapeRe(powerReading.label))
+        });
+      }
+
+      // ── VRAM Used (MB) + Used % ───────────────────────────────────────────
+      const vramUsed = readings.find(r => r.type === 'Data' && /^GPU Memory Used$/i.test(r.label))
+                    || readings.find(r => r.type === 'Data' && /D3D Dedicated Memory Used/i.test(r.label));
+      const vramTotal = readings.find(r => r.type === 'Data' && /^GPU Memory Total$/i.test(r.label))
+                     || readings.find(r => r.type === 'Data' && /D3D Dedicated Memory Total/i.test(r.label));
+
+      if (vramUsed) {
+        const vramUsedRe  = escapeRe(vramUsed.label);
+        sensors.push({
+          id: `gpu_${devId}_vram_used_mb`,
+          name: `${deviceName} VRAM Used`,
+          category: 'gpu',
+          unit: 'MB',
+          source: 'lhm',
+          defaultTopic: `{prefix}/sensor/gpu_${devId}_vram_used_mb/state`,
+          defaultThreshold: 50,
+          defaultInterval: 2000,
+          poll: makePoller('Data', vramUsedRe)
+        });
+
+        if (vramTotal && vramTotal.value > 0) {
+          const vramTotalRe = escapeRe(vramTotal.label);
+          sensors.push({
+            id: `gpu_${devId}_vram_percent`,
+            name: `${deviceName} VRAM %`,
+            category: 'gpu',
+            unit: '%',
+            source: 'lhm',
+            defaultTopic: `{prefix}/sensor/gpu_${devId}_vram_percent/state`,
+            defaultThreshold: 1,
+            defaultInterval: 2000,
+            poll: async () => {
+              const dev = await hwinfo.readByDevice();
+              if (!dev || !dev[deviceName]) return null;
+              const used  = dev[deviceName].find(x => x.type === 'Data' && vramUsedRe.test(x.label));
+              const total = dev[deviceName].find(x => x.type === 'Data' && vramTotalRe.test(x.label));
+              if (!used || !total || !total.value) return null;
+              return round(used.value / total.value * 100, 1);
+            }
+          });
         }
-      });
+      }
     }
   } catch (_) { /* ignore */ }
   return sensors;
@@ -611,8 +730,184 @@ async function findAmdgpuHwmon(pciAddr) {
   return null;
 }
 
+
+
+// ── LHM-based disk discovery ──────────────────────────────────────────────────
+// Reads Read Rate, Write Rate, Used Space and Free Space directly from LHM.
+// Called before si-based discovery; skipped if LHM is not running.
+
+// Label patterns expected from LHM for disk devices
+const LHM_DISK_THROUGHPUT = { read: /read rate/i, write: /write rate/i };
+const LHM_DISK_LOAD       = { used: /used space/i };
+const LHM_DISK_DATA       = { free: /free space/i };
+
+// Heuristic: a device is a storage device if it has Read Rate / Write Rate throughput sensors
+function isLhmDiskDevice(readings) {
+  return readings.some(r => r.type === 'Throughput' && LHM_DISK_THROUGHPUT.read.test(r.label));
+}
+
+async function discoverDiskSensorsFromLhm() {
+  const sensors = [];
+  try {
+    const byDevice = await hwinfo.readByDevice();
+    if (!byDevice) return sensors;
+
+    for (const [deviceName, readings] of Object.entries(byDevice)) {
+      if (!isLhmDiskDevice(readings)) continue;
+
+      const safeId = deviceName.toLowerCase()
+        .replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+
+      const makePoller = (type, labelRe) => async () => {
+        const dev = await hwinfo.readByDevice();
+        if (!dev || !dev[deviceName]) return null;
+        const r = dev[deviceName].find(x => x.type === type && labelRe.test(x.label));
+        return r != null ? round(r.value, 1) : null;
+      };
+
+      sensors.push({
+        id: `disk_${safeId}_read_kbs`,
+        name: `${deviceName} Read`,
+        category: 'disk',
+        unit: 'KB/s',
+        source: 'lhm',
+        defaultTopic: `{prefix}/sensor/disk_${safeId}_read_kbs/state`,
+        defaultThreshold: 10,
+        defaultInterval: 2000,
+        poll: makePoller('Throughput', LHM_DISK_THROUGHPUT.read)
+      });
+
+      sensors.push({
+        id: `disk_${safeId}_write_kbs`,
+        name: `${deviceName} Write`,
+        category: 'disk',
+        unit: 'KB/s',
+        source: 'lhm',
+        defaultTopic: `{prefix}/sensor/disk_${safeId}_write_kbs/state`,
+        defaultThreshold: 10,
+        defaultInterval: 2000,
+        poll: makePoller('Throughput', LHM_DISK_THROUGHPUT.write)
+      });
+
+      if (readings.some(r => r.type === 'Load' && LHM_DISK_LOAD.used.test(r.label))) {
+        sensors.push({
+          id: `disk_${safeId}_use_percent`,
+          name: `${deviceName} Usage`,
+          category: 'disk',
+          unit: '%',
+          source: 'lhm',
+          defaultTopic: `{prefix}/sensor/disk_${safeId}_use_percent/state`,
+          defaultThreshold: 1,
+          defaultInterval: 30000,
+          poll: makePoller('Load', LHM_DISK_LOAD.used)
+        });
+      }
+
+      if (readings.some(r => r.type === 'Data' && LHM_DISK_DATA.free.test(r.label))) {
+        sensors.push({
+          id: `disk_${safeId}_free_gb`,
+          name: `${deviceName} Free`,
+          category: 'disk',
+          unit: 'GB',
+          source: 'lhm',
+          defaultTopic: `{prefix}/sensor/disk_${safeId}_free_gb/state`,
+          defaultThreshold: 0.5,
+          defaultInterval: 30000,
+          poll: makePoller('Data', LHM_DISK_DATA.free)
+        });
+      }
+    }
+  } catch (_) { /* ignore */ }
+  return sensors;
+}
+
+// ── LHM-based network discovery ───────────────────────────────────────────────
+// Reads Download Speed, Upload Speed and Network Utilization directly from LHM.
+
+const LHM_NET_THROUGHPUT = { rx: /download speed/i, tx: /upload speed/i };
+const LHM_NET_LOAD       = { util: /network utilization/i };
+
+// Virtual/irrelevant adapter name patterns to skip
+const LHM_NET_SKIP = [
+  /debugger/i, /QoS Packet Scheduler/i, /WFP/i, /Npcap/i, /Hyper-V/i,
+  /VMware/i, /VirtualBox/i, /Loopback/i, /Teredo/i, /ISATAP/i,
+  /6to4/i, /WAN Miniport/i, /Bluetooth/i
+];
+
+function isLhmNetDevice(deviceName, readings) {
+  if (LHM_NET_SKIP.some(re => re.test(deviceName))) return false;
+  return readings.some(r => r.type === 'Throughput' &&
+    (LHM_NET_THROUGHPUT.rx.test(r.label) || LHM_NET_THROUGHPUT.tx.test(r.label)));
+}
+
+async function discoverNetworkSensorsFromLhm() {
+  const sensors = [];
+  try {
+    const byDevice = await hwinfo.readByDevice();
+    if (!byDevice) return sensors;
+
+    for (const [deviceName, readings] of Object.entries(byDevice)) {
+      if (!isLhmNetDevice(deviceName, readings)) continue;
+
+      const safeId = deviceName.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+
+      const makePoller = (type, labelRe) => async () => {
+        const dev = await hwinfo.readByDevice();
+        if (!dev || !dev[deviceName]) return null;
+        const r = dev[deviceName].find(x => x.type === type && labelRe.test(x.label));
+        return r != null ? round(r.value, 1) : null;
+      };
+
+      sensors.push({
+        id: `net_${safeId}_rx_kbs`,
+        name: `${deviceName} Download`,
+        category: 'network',
+        unit: 'KB/s',
+        source: 'lhm',
+        defaultTopic: `{prefix}/sensor/net_${safeId}_rx_kbs/state`,
+        defaultThreshold: 10,
+        defaultInterval: 2000,
+        poll: makePoller('Throughput', LHM_NET_THROUGHPUT.rx)
+      });
+
+      sensors.push({
+        id: `net_${safeId}_tx_kbs`,
+        name: `${deviceName} Upload`,
+        category: 'network',
+        unit: 'KB/s',
+        source: 'lhm',
+        defaultTopic: `{prefix}/sensor/net_${safeId}_tx_kbs/state`,
+        defaultThreshold: 10,
+        defaultInterval: 2000,
+        poll: makePoller('Throughput', LHM_NET_THROUGHPUT.tx)
+      });
+
+      if (readings.some(r => r.type === 'Load' && LHM_NET_LOAD.util.test(r.label))) {
+        sensors.push({
+          id: `net_${safeId}_utilization`,
+          name: `${deviceName} Utilization`,
+          category: 'network',
+          unit: '%',
+          source: 'lhm',
+          defaultTopic: `{prefix}/sensor/net_${safeId}_utilization/state`,
+          defaultThreshold: 1,
+          defaultInterval: 2000,
+          poll: makePoller('Load', LHM_NET_LOAD.util)
+        });
+      }
+    }
+  } catch (_) { /* ignore */ }
+  return sensors;
+}
+
 
 async function discoverDiskSensors() {
+  // On Windows: try LHM first (no WMI overhead); fall back to si for volume-level data
+  if (process.platform === 'win32' && hwinfo) {
+    const lhmSensors = await discoverDiskSensorsFromLhm();
+    if (lhmSensors.length > 0) return lhmSensors;
+  }
+
   const drives = await siCall('fsSize');
   const sensors = [];
 
@@ -632,6 +927,7 @@ async function discoverDiskSensors() {
       name: `Disk ${mount} Usage`,
       category: 'disk',
       unit: '%',
+      source: 'si',
       defaultTopic: `{prefix}/sensor/disk_${safeMount}_use_percent/state`,
       defaultThreshold: 1,
       defaultInterval: 30000,
@@ -646,6 +942,7 @@ async function discoverDiskSensors() {
       name: `Disk ${mount} Free`,
       category: 'disk',
       unit: 'GB',
+      source: 'si',
       defaultTopic: `{prefix}/sensor/disk_${safeMount}_free_gb/state`,
       defaultThreshold: 0.5,
       defaultInterval: 30000,
@@ -660,6 +957,12 @@ async function discoverDiskSensors() {
 }
 
 async function discoverNetworkSensors() {
+  // On Windows: try LHM first (no WMI overhead); fall back to si
+  if (process.platform === 'win32' && hwinfo) {
+    const lhmSensors = await discoverNetworkSensorsFromLhm();
+    if (lhmSensors.length > 0) return lhmSensors;
+  }
+
   const ifaces = await siCall('networkInterfaces');
   const sensors = [];
 
@@ -676,6 +979,7 @@ async function discoverNetworkSensors() {
       name: `${ifaceName} Download`,
       category: 'network',
       unit: 'KB/s',
+      source: 'si',
       defaultTopic: `{prefix}/sensor/net_${safeId}_rx_kbs/state`,
       defaultThreshold: 10,
       defaultInterval: 2000,
@@ -690,6 +994,7 @@ async function discoverNetworkSensors() {
       name: `${ifaceName} Upload`,
       category: 'network',
       unit: 'KB/s',
+      source: 'si',
       defaultTopic: `{prefix}/sensor/net_${safeId}_tx_kbs/state`,
       defaultThreshold: 10,
       defaultInterval: 2000,

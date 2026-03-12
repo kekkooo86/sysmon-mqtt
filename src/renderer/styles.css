@@ -94,6 +94,20 @@ h1 { font-size: 15px; font-weight: 600; }
 .sensor-unit { color: var(--text-muted); font-size: 11px; min-width: 32px; text-align: right; }
 .sensor-live { font-size: 12px; color: var(--accent); min-width: 60px; text-align: right; font-variant-numeric: tabular-nums; }
 
+.sensor-source {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+  cursor: default;
+  flex-shrink: 0;
+}
+.source-lhm     { background: rgba(137,180,250,.15); color: #89b4fa; }
+.source-si      { background: rgba(250,179,135,.15); color: #fab387; }
+.source-win-api { background: rgba(249,226,175,.15); color: #f9e2af; }
+.source-sysfs   { background: rgba(166,227,161,.15); color: #a6e3a1; }
+
 .sensor-details { padding: 0 12px 10px; border-top: 1px solid var(--border); padding-top: 8px; }
 .sensor-details.hidden { display: none; }
 

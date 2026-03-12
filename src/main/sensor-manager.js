@@ -2,23 +2,28 @@ const { EventEmitter } = require('events');
 const store            = require('./store');
 const { resolveTopic } = require('./utils');
 
-// Master timer interval — all sensors are checked against this tick.
-// Individual sensor intervals are multiples of TICK_MS.
-const TICK_MS = 500;
+// Minimum and maximum tick boundaries (ms).
+// The actual tick is computed dynamically as max(MIN_TICK_MS, floor(minInterval / 2))
+// so the timer fires twice per shortest sensor interval, giving one retry slot
+// against Node.js timer jitter without over-spinning when all sensors are slow.
+const MIN_TICK_MS = 250;
+const MAX_TICK_MS = 2000;
 
 class SensorManager extends EventEmitter {
   constructor() {
     super();
-    this._timer    = null;
-    this._sensors  = [];
-    this._mqttClient = null;
-    this._ticking  = false;
+    this._timer       = null;
+    this._sensors     = [];
+    this._mqttClient  = null;
+    this._ticking     = false;
+    this._topicPrefix = '';
   }
 
   // Load sensor definitions + user configs, bind mqtt client
   load(definitions, configs, mqttClient) {
-    this._mqttClient = mqttClient;
-    this._sensors = [];
+    this._mqttClient  = mqttClient;
+    this._topicPrefix = store.get('mqtt').topicPrefix ?? '';
+    this._sensors     = [];
 
     for (const def of definitions) {
       const cfg = configs.find(c => c.id === def.id);
@@ -35,7 +40,13 @@ class SensorManager extends EventEmitter {
   start() {
     this.stop();
     if (this._sensors.length === 0) return;
-    this._timer = setInterval(() => this._tick(), TICK_MS);
+
+    // Fire at half the shortest active sensor interval so each sensor gets
+    // two tick opportunities per cycle, absorbing Node.js timer jitter.
+    const minInterval = this._sensors.reduce((m, s) => Math.min(m, s.cfg.interval), Infinity);
+    const tickMs      = Math.max(MIN_TICK_MS, Math.min(MAX_TICK_MS, Math.floor(minInterval / 2)));
+
+    this._timer = setInterval(() => this._tick(), tickMs);
   }
 
   stop() {
@@ -85,8 +96,7 @@ class SensorManager extends EventEmitter {
       this.emit('sensor-update', { id: entry.def.id, name: entry.def.name, value, unit: entry.def.unit });
 
       if (this._mqttClient && this._mqttClient.isConnected) {
-        const prefix = store.get('mqtt').topicPrefix ?? '';
-        this._mqttClient.publish(resolveTopic(entry.cfg.topic, prefix), String(value));
+        this._mqttClient.publish(resolveTopic(entry.cfg.topic, this._topicPrefix), String(value));
       }
     } catch (err) {
       // Sensor read failure — emit but don't crash
