@@ -14,11 +14,12 @@
     "build:linux": "electron-builder --linux",
     "install:linux-deb": "npm run build:linux && sudo dpkg -i dist/*.deb",
     "start:linux-deb-first-time": "npm run install:linux-deb && sysmon-mqtt --no-sandbox",
-    "build:win": "electron-builder --windows",
+    "build:win": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --windows",
     "build:mac": "electron-builder --mac"
   },
   "private": true,
   "devDependencies": {
+    "cross-env": "10.1.0",
     "electron": "^29.0.0",
     "electron-builder": "^24.0.0"
   },

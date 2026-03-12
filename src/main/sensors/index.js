@@ -1,6 +1,8 @@
-const si = require('systeminformation');
-const fs = require('fs/promises');
-const path = require('path');
+const si             = require('systeminformation');
+const fs             = require('fs/promises');
+const path           = require('path');
+const { execFile }   = require('child_process');
+const hwinfo         = process.platform === 'win32' ? require('../hwinfo-bridge') : null;
 
 const DRM_BASE   = '/sys/class/drm';
 const HWMON_BASE = '/sys/class/hwmon';
@@ -34,7 +36,14 @@ const STATIC_SENSORS = [
     poll: async () => {
       const d = await si.cpuTemperature();
       const val = (d.max != null && d.max > 0) ? d.max : d.main;
-      return (val != null && val > 0) ? round(val, 1) : null;
+      if (val != null && val > 0) return round(val, 1);
+      // Windows fallback: try HWiNFO64 shared memory first, then WMI thermal zones
+      if (process.platform === 'win32') {
+        const hwinfoTemp = await hwinfo.readCpuTemp();
+        if (hwinfoTemp !== null) return hwinfoTemp;
+        return readWmiCpuTemp();
+      }
+      return null;
     }
   },
   {
@@ -134,7 +143,14 @@ async function discoverTemperatureSensors() {
 }
 
 async function discoverGpuSensors() {
-  if (process.platform !== 'linux') return [];
+  if (process.platform === 'linux') return discoverGpuSensorsLinux();
+  if (process.platform === 'win32') return discoverGpuSensorsWindows();
+  return [];
+}
+
+// ── Linux GPU discovery (AMD sysfs) ──────────────────────────────────────────
+
+async function discoverGpuSensorsLinux() {
   const sensors = [];
 
   try {
@@ -234,6 +250,81 @@ async function discoverGpuSensors() {
   }
 
   return sensors;
+}
+
+// ── Windows GPU discovery (via si.graphics() + Windows performance counters) ─
+
+async function discoverGpuSensorsWindows() {
+  const sensors = [];
+
+  try {
+    // Detect discrete GPU (VRAM > 1 GB)
+    const { controllers } = await si.graphics();
+    const discrete = (controllers || [])
+      .filter(c => c.vram > 1024)
+      .sort((a, b) => b.vram - a.vram)[0];
+    if (!discrete) return [];
+
+    // Verify that the Windows GPU performance counters are available
+    const testUsage = await pollGpuUsageWindows();
+    if (testUsage === null) return [];  // counters not available on this system
+
+    sensors.push({
+      id: 'gpu_usage',
+      name: 'GPU Usage',
+      category: 'gpu',
+      unit: '%',
+      defaultTopic: '{prefix}/sensor/gpu_usage/state',
+      defaultThreshold: 1,
+      defaultInterval: 2000,
+      poll: pollGpuUsageWindows
+    });
+  } catch (_) {
+    // GPU sensors not available — skip silently
+  }
+
+  return sensors;
+}
+
+// Queries Windows GPU performance counters (3D engine utilization, summed).
+// Works natively on Windows 10/11 without third-party tools.
+function pollGpuUsageWindows() {
+  return new Promise((resolve) => {
+    const script =
+      'try {' +
+      ' $v = (Get-WmiObject -Query "SELECT UtilizationPercentage FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine" -ErrorAction Stop' +
+      ' | Where-Object { $_.Name -like "*engtype_3D*" }' +
+      ' | Measure-Object -Property UtilizationPercentage -Sum).Sum;' +
+      ' Write-Output ([math]::Min([int]$v, 100))' +
+      '} catch { Write-Output "" }';
+
+    execFile('powershell.exe', ['-NoProfile', '-Command', script], { timeout: 4000 }, (err, stdout) => {
+      if (err || !stdout.trim()) return resolve(null);
+      const val = parseFloat(stdout.trim());
+      resolve(isNaN(val) ? null : val);
+    });
+  });
+}
+
+// ── Windows WMI CPU temperature fallback ────────────────────────────────────
+
+// Reads thermal zones via MSAcpi_ThermalZoneTemperature (requires admin rights).
+// Returns the highest valid reading in °C, or null if unavailable.
+function readWmiCpuTemp() {
+  return new Promise((resolve) => {
+    const script =
+      'try {' +
+      ' $t = Get-WmiObject MSAcpi_ThermalZoneTemperature -Namespace "root/wmi" -ErrorAction Stop;' +
+      ' $max = ($t | ForEach-Object { [math]::Round(($_.CurrentTemperature - 2732) / 10.0, 1) } | Measure-Object -Maximum).Maximum;' +
+      ' if ($max -gt 0) { Write-Output $max } else { Write-Output "" }' +
+      '} catch { Write-Output "" }';
+
+    execFile('powershell.exe', ['-NoProfile', '-Command', script], { timeout: 3000 }, (err, stdout) => {
+      if (err || !stdout.trim()) return resolve(null);
+      const val = parseFloat(stdout.trim());
+      resolve(isNaN(val) || val <= 0 ? null : val);
+    });
+  });
 }
 
 // ── sysfs helpers ────────────────────────────────────────────────────────────

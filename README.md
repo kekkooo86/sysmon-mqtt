@@ -13,7 +13,117 @@ Electron desktop app that monitors system sensors (CPU, GPU, RAM, disk, network)
 
 ---
 
-## Installation (Linux `.deb`)
+## Windows
+
+### Prerequisites
+
+#### Node.js
+
+Install **Node.js 20 LTS** from https://nodejs.org (use the Windows `.msi` installer).
+
+Verify in PowerShell:
+```powershell
+node -v   # v20.x.x
+npm -v    # 10.x.x
+```
+
+#### LibreHardwareMonitor (required for CPU temperature)
+
+On Windows, CPU temperature cannot be read without a companion tool that has ring-0 hardware
+access. SysMon-MQTT uses **LibreHardwareMonitor** (free, open source) as its primary backend.
+
+1. Download the latest release from:
+   https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases
+   → choose `LibreHardwareMonitor-net472.zip` (or the latest available)
+
+2. Extract to any folder (e.g. `C:\Program Files\LibreHardwareMonitor\`)
+
+3. Run **`LibreHardwareMonitor.exe` as Administrator**
+   (right-click → *Run as administrator* — required for hardware register access)
+
+4. Enable the HTTP sensor server:
+   `Options` → check **"Run remote web server"**
+
+   SysMon-MQTT polls `http://localhost:8085/data.json` automatically while LHM is running.
+
+5. *(Optional but recommended)* Start LHM automatically with Windows:
+   `Options` → check **"Start with Windows"**
+
+   To ensure it always runs with administrator privileges at boot, create a scheduled task:
+   - Open **Task Scheduler** → *Create Task*
+   - General tab: check **"Run with highest privileges"**
+   - Trigger: **At log on**
+   - Action: start `LibreHardwareMonitor.exe`
+
+> **Without LHM running**, CPU temperature will show as unavailable. All other sensors
+> (CPU load, RAM, disk, network, GPU usage) work natively without any companion app.
+
+#### Supported alternative backends (auto-detected, no configuration needed)
+
+SysMon-MQTT tries these backends in order and uses the first one that responds:
+
+| Backend | How to enable |
+|---|---|
+| **LibreHardwareMonitor HTTP** ✅ *recommended* | Options → "Run remote web server" |
+| **OpenHardwareMonitor WMI** | Run OHM as Administrator |
+| **HWiNFO64 Shared Memory** | Settings → General → "Shared Memory Support" *(12h limit on free tier)* |
+| **Core Temp** | Run Core Temp from https://www.alcpu.com/CoreTemp/ |
+
+---
+
+### Running in development
+
+```powershell
+cd path\to\sysmon-mqtt
+npm install
+npm start
+```
+
+> Start LibreHardwareMonitor (as Administrator, with "Run remote web server" enabled) before
+> launching SysMon-MQTT so CPU temperature is available immediately.
+
+### Building the Windows installer (`.exe`)
+
+```powershell
+npm run build:win
+# Output: dist\SysMon-MQTT Setup <version>.exe  (NSIS installer, ~74 MB)
+```
+
+No code signing certificate is required. The build script disables signing automatically.
+
+### Installing
+
+Double-click `SysMon-MQTT Setup <version>.exe`. The installer lets you choose the installation
+directory and creates a Start Menu shortcut. The app starts minimized to the system tray.
+
+### Sensor availability on Windows
+
+| Sensor | Available | Notes |
+|---|---|---|
+| CPU Usage | ✅ Always | |
+| CPU Temp (max) | ⚠️ Requires LHM | See prerequisites above |
+| RAM Used / RAM Used (GB) | ✅ Always | |
+| GPU Usage | ✅ Always | Via Windows native performance counters |
+| GPU Temperature | ⚠️ Requires LHM | Exposed by LHM if GPU driver supports it |
+| Disk Usage / Free | ✅ Always | Per drive |
+| Network Upload / Download | ✅ Always | Per interface |
+
+### Autostart on login (Windows)
+
+Autostart is managed directly from the app — no manual setup needed.
+
+1. Open the Settings window (click the tray icon)
+2. Toggle **"Start on login"** → ON
+
+The app writes the autostart entry to the Windows registry
+(`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) automatically via the standard
+Electron API. It will launch silently to the tray on the next login.
+
+To disable, toggle **"Start on login"** → OFF in the Settings window.
+
+---
+
+## Linux (`.deb`)
 
 ### Quick install — first time
 

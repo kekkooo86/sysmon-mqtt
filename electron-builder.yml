@@ -21,6 +21,8 @@ win:
   target:
     - target: nsis
   icon: assets/icon.png
+  signingHashAlgorithms: null
+  sign: null
 
 mac:
   target:
