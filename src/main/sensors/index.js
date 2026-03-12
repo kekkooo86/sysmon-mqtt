@@ -2,7 +2,95 @@ const si             = require('systeminformation');
 const fs             = require('fs/promises');
 const path           = require('path');
 const { execFile }   = require('child_process');
+const { Worker }     = require('worker_threads');
 const hwinfo         = process.platform === 'win32' ? require('../hwinfo-bridge') : null;
+
+// ---------------------------------------------------------------------------
+// Worker Thread for si.* calls on Windows
+// Keeps expensive WMI/PowerShell calls off the Electron main thread.
+// ---------------------------------------------------------------------------
+
+let _siWorker = null;
+let _siWorkerPending = new Map();
+let _siWorkerNextId = 0;
+
+function getSiWorker() {
+  if (_siWorker) return _siWorker;
+  const workerPath = path.join(__dirname, '..', 'sensor-worker.js');
+  _siWorker = new Worker(workerPath);
+  _siWorker.on('message', ({ id, result, error }) => {
+    const p = _siWorkerPending.get(id);
+    if (!p) return;
+    _siWorkerPending.delete(id);
+    error ? p.reject(new Error(error)) : p.resolve(result);
+  });
+  _siWorker.on('error', (err) => {
+    // Drain all pending requests with the error
+    for (const [id, p] of _siWorkerPending) {
+      _siWorkerPending.delete(id);
+      p.reject(err);
+    }
+    _siWorker = null; // will recreate on next call
+  });
+  return _siWorker;
+}
+
+function siCall(fn, ...args) {
+  // On Windows use the worker thread; on other platforms call directly
+  if (process.platform === 'win32') {
+    return new Promise((resolve, reject) => {
+      const id = _siWorkerNextId++;
+      _siWorkerPending.set(id, { resolve, reject });
+      getSiWorker().postMessage({ id, fn, args });
+    });
+  }
+  return si[fn](...args);
+}
+
+// ---------------------------------------------------------------------------
+// Per-call caching for expensive si.* calls
+// Multiple sensors that read the same underlying data share one system call
+// per polling window instead of each spawning their own.
+// ---------------------------------------------------------------------------
+
+function makeCachedCall(fn, ttlMs) {
+  let cache     = null;
+  let cacheTime = 0;
+  let pending   = null;
+  return () => {
+    const now = Date.now();
+    if (cache !== null && (now - cacheTime) < ttlMs) return Promise.resolve(cache);
+    if (pending) return pending;
+    pending = fn().then(result => {
+      cache     = result;
+      cacheTime = Date.now();
+      pending   = null;
+      return result;
+    }).catch(err => {
+      pending = null;
+      throw err;
+    });
+    return pending;
+  };
+}
+
+const SI_TTL = 900; // ms — shorter than the minimum 1 s poll interval
+
+const getCachedCpuTemperature = makeCachedCall(() => siCall('cpuTemperature'), SI_TTL);
+const getCachedCpuLoad         = makeCachedCall(() => siCall('currentLoad'),   SI_TTL);
+const getCachedMem             = makeCachedCall(() => siCall('mem'),           SI_TTL);
+const getCachedFsSize          = makeCachedCall(() => siCall('fsSize'),        5000);
+
+// Network stats are per-interface, so we keep one cache entry per iface name.
+const _netStatsCaches = {};
+function getCachedNetworkStats(ifaceName) {
+  if (!_netStatsCaches[ifaceName]) {
+    _netStatsCaches[ifaceName] = makeCachedCall(() => siCall('networkStats', ifaceName), SI_TTL);
+  }
+  return _netStatsCaches[ifaceName]();
+}
+
+// ---------------------------------------------------------------------------
 
 const DRM_BASE   = '/sys/class/drm';
 const HWMON_BASE = '/sys/class/hwmon';
@@ -21,7 +109,13 @@ const STATIC_SENSORS = [
     defaultThreshold: 1,
     defaultInterval: 1000,
     poll: async () => {
-      const d = await si.currentLoad();
+      // On Windows prefer LHM CPU Total Load — pure HTTP read, no WMI/PowerShell
+      if (process.platform === 'win32' && hwinfo) {
+        const v = await hwinfo.readFirstMatch('Load',
+          /^CPU Total$/i, /^CPU Package$/i, /^Processor Total$/i, /^CPU$/i);
+        if (v !== null) return round(v, 1);
+      }
+      const d = await getCachedCpuLoad();
       return round(d.currentLoad, 1);
     }
   },
@@ -34,16 +128,15 @@ const STATIC_SENSORS = [
     defaultThreshold: 0.1,
     defaultInterval: 1000,
     poll: async () => {
-      const d = await si.cpuTemperature();
-      const val = (d.max != null && d.max > 0) ? d.max : d.main;
-      if (val != null && val > 0) return round(val, 1);
-      // Windows fallback: try HWiNFO64 shared memory first, then WMI thermal zones
+      // On Windows si.cpuTemperature() always returns null — skip it entirely
       if (process.platform === 'win32') {
         const hwinfoTemp = await hwinfo.readCpuTemp();
         if (hwinfoTemp !== null) return hwinfoTemp;
         return readWmiCpuTemp();
       }
-      return null;
+      const d = await getCachedCpuTemperature();
+      const val = (d.max != null && d.max > 0) ? d.max : d.main;
+      return (val != null && val > 0) ? round(val, 1) : null;
     }
   },
   {
@@ -55,7 +148,13 @@ const STATIC_SENSORS = [
     defaultThreshold: 1,
     defaultInterval: 2000,
     poll: async () => {
-      const d = await si.mem();
+      // On Windows prefer LHM Memory Load — no WMI
+      if (process.platform === 'win32' && hwinfo) {
+        const v = await hwinfo.readFirstMatch('Load',
+          /^Memory$/i, /^Physical Memory$/i, /^Used Memory$/i, /^RAM$/i);
+        if (v !== null) return round(v, 1);
+      }
+      const d = await getCachedMem();
       return round(d.active / d.total * 100, 1);
     }
   },
@@ -68,7 +167,13 @@ const STATIC_SENSORS = [
     defaultThreshold: 0.1,
     defaultInterval: 2000,
     poll: async () => {
-      const d = await si.mem();
+      // On Windows prefer LHM Data "Used Memory" (in GB)
+      if (process.platform === 'win32' && hwinfo) {
+        const v = await hwinfo.readFirstMatch('Data',
+          /^Used Memory$/i, /^Memory Used$/i, /^RAM Used$/i);
+        if (v !== null) return round(v, 2);
+      }
+      const d = await getCachedMem();
       return round(d.active / 1073741824, 2);
     }
   }
@@ -80,8 +185,59 @@ const STATIC_SENSORS = [
 
 async function discoverTemperatureSensors() {
   const sensors = [];
+
+  // On Windows, discover core temperatures directly from LHM (avoids si.cpuTemperature())
+  if (process.platform === 'win32' && hwinfo) {
+    try {
+      const temps = await hwinfo.readByType('Temperature');
+      if (temps.length > 0) {
+        // CPU core temperatures (e.g. "Core #0", "CPU Core #0")
+        const coreTemps = temps.filter(t => /Core\s*#?\d+/i.test(t.label) && t.value > 0);
+        coreTemps.forEach((t, i) => {
+          const label = t.label;
+          sensors.push({
+            id: `cpu_temp_core${i}`,
+            name: `CPU Core ${i} Temp`,
+            category: 'cpu',
+            unit: '°C',
+            defaultTopic: `{prefix}/sensor/cpu_temp_core${i}/state`,
+            defaultThreshold: 0.1,
+            defaultInterval: 1000,
+            poll: async () => {
+              const all = await hwinfo.readByType('Temperature');
+              const r = all.find(t => t.label === label);
+              return r && r.value > 0 ? round(r.value, 1) : null;
+            }
+          });
+        });
+
+        // Chipset
+        const chipset = temps.find(t => /chipset/i.test(t.label) && t.value > 0);
+        if (chipset) {
+          const label = chipset.label;
+          sensors.push({
+            id: 'chipset_temp',
+            name: 'Chipset Temp',
+            category: 'cpu',
+            unit: '°C',
+            defaultTopic: '{prefix}/sensor/chipset_temp/state',
+            defaultThreshold: 0.5,
+            defaultInterval: 5000,
+            poll: async () => {
+              const all = await hwinfo.readByType('Temperature');
+              const r = all.find(t => t.label === label);
+              return r && r.value > 0 ? round(r.value, 1) : null;
+            }
+          });
+        }
+
+        return sensors;
+      }
+    } catch (_) { /* fall through to si path */ }
+  }
+
   try {
-    const data = await si.cpuTemperature();
+    const data = await siCall('cpuTemperature');
 
     // Individual core temperatures
     if (Array.isArray(data.cores) && data.cores.length > 1) {
@@ -95,7 +251,7 @@ async function discoverTemperatureSensors() {
           defaultThreshold: 0.1,
           defaultInterval: 1000,
           poll: async () => {
-            const d = await si.cpuTemperature();
+            const d = await getCachedCpuTemperature();
             const val = d.cores?.[i];
             return (val != null && val > 0) ? round(val, 1) : null;
           }
@@ -114,7 +270,7 @@ async function discoverTemperatureSensors() {
         defaultThreshold: 0.5,
         defaultInterval: 2000,
         poll: async () => {
-          const d = await si.cpuTemperature();
+          const d = await getCachedCpuTemperature();
           return (d.gpu != null && d.gpu > 0) ? round(d.gpu, 1) : null;
         }
       });
@@ -131,7 +287,7 @@ async function discoverTemperatureSensors() {
         defaultThreshold: 0.5,
         defaultInterval: 5000,
         poll: async () => {
-          const d = await si.cpuTemperature();
+          const d = await getCachedCpuTemperature();
           return (d.chipset != null && d.chipset > 0) ? round(d.chipset, 1) : null;
         }
       });
@@ -252,22 +408,28 @@ async function discoverGpuSensorsLinux() {
   return sensors;
 }
 
-// ── Windows GPU discovery (via si.graphics() + Windows performance counters) ─
+// ── Windows GPU discovery (LHM preferred, fallback: si.graphics() + perf counters) ──
 
 async function discoverGpuSensorsWindows() {
   const sensors = [];
 
   try {
-    // Detect discrete GPU (VRAM > 1 GB)
-    const { controllers } = await si.graphics();
+    // First try: discover GPU sensors from LHM (covers temp, load, fans, VRAM, etc.)
+    if (hwinfo) {
+      const lhmSensors = await discoverGpuSensorsFromLhm();
+      if (lhmSensors.length > 0) return lhmSensors;
+    }
+
+    // Fallback: detect discrete GPU via si.graphics() + Windows perf counters
+    const { controllers } = await siCall('graphics');
     const discrete = (controllers || [])
       .filter(c => c.vram > 1024)
       .sort((a, b) => b.vram - a.vram)[0];
     if (!discrete) return [];
 
     // Verify that the Windows GPU performance counters are available
-    const testUsage = await pollGpuUsageWindows();
-    if (testUsage === null) return [];  // counters not available on this system
+    const testUsage = await getCachedGpuUsageWindows();
+    if (testUsage === null) return [];
 
     sensors.push({
       id: 'gpu_usage',
@@ -277,7 +439,7 @@ async function discoverGpuSensorsWindows() {
       defaultTopic: '{prefix}/sensor/gpu_usage/state',
       defaultThreshold: 1,
       defaultInterval: 2000,
-      poll: pollGpuUsageWindows
+      poll: getCachedGpuUsageWindows
     });
   } catch (_) {
     // GPU sensors not available — skip silently
@@ -286,9 +448,62 @@ async function discoverGpuSensorsWindows() {
   return sensors;
 }
 
+// Discover GPU sensors directly from LHM readings (no process spawning).
+async function discoverGpuSensorsFromLhm() {
+  const sensors = [];
+  try {
+    const [temps, loads] = await Promise.all([
+      hwinfo.readByType('Temperature'),
+      hwinfo.readByType('Load'),
+    ]);
+
+    const gpuTemps  = temps.filter(t => /GPU/i.test(t.label) && t.value > 0);
+    const gpuLoads  = loads.filter(l => /GPU/i.test(l.label) && l.value >= 0);
+
+    for (const t of gpuTemps) {
+      const label = t.label;
+      const safeId = label.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+      sensors.push({
+        id: `gpu_temp_${safeId}`,
+        name: label,
+        category: 'gpu',
+        unit: '°C',
+        defaultTopic: `{prefix}/sensor/gpu_temp_${safeId}/state`,
+        defaultThreshold: 0.5,
+        defaultInterval: 2000,
+        poll: async () => {
+          const all = await hwinfo.readByType('Temperature');
+          const r = all.find(x => x.label === label);
+          return r && r.value > 0 ? round(r.value, 1) : null;
+        }
+      });
+    }
+
+    for (const l of gpuLoads) {
+      const label = l.label;
+      const safeId = label.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+      sensors.push({
+        id: `gpu_load_${safeId}`,
+        name: label,
+        category: 'gpu',
+        unit: '%',
+        defaultTopic: `{prefix}/sensor/gpu_load_${safeId}/state`,
+        defaultThreshold: 1,
+        defaultInterval: 2000,
+        poll: async () => {
+          const all = await hwinfo.readByType('Load');
+          const r = all.find(x => x.label === label);
+          return r != null ? round(r.value, 1) : null;
+        }
+      });
+    }
+  } catch (_) { /* ignore */ }
+  return sensors;
+}
+
 // Queries Windows GPU performance counters (3D engine utilization, summed).
 // Works natively on Windows 10/11 without third-party tools.
-function pollGpuUsageWindows() {
+function _pollGpuUsageWindowsRaw() {
   return new Promise((resolve) => {
     const script =
       'try {' +
@@ -306,11 +521,14 @@ function pollGpuUsageWindows() {
   });
 }
 
+// Cached wrapper — avoids spawning PowerShell on every poll tick
+const getCachedGpuUsageWindows = makeCachedCall(_pollGpuUsageWindowsRaw, SI_TTL);
+
 // ── Windows WMI CPU temperature fallback ────────────────────────────────────
 
 // Reads thermal zones via MSAcpi_ThermalZoneTemperature (requires admin rights).
 // Returns the highest valid reading in °C, or null if unavailable.
-function readWmiCpuTemp() {
+function _readWmiCpuTempRaw() {
   return new Promise((resolve) => {
     const script =
       'try {' +
@@ -326,6 +544,8 @@ function readWmiCpuTemp() {
     });
   });
 }
+
+const readWmiCpuTemp = makeCachedCall(_readWmiCpuTempRaw, SI_TTL);
 
 // ── sysfs helpers ────────────────────────────────────────────────────────────
 
@@ -393,7 +613,7 @@ async function findAmdgpuHwmon(pciAddr) {
 
 
 async function discoverDiskSensors() {
-  const drives = await si.fsSize();
+  const drives = await siCall('fsSize');
   const sensors = [];
 
   // Exclude non-user-facing virtual/system mounts
@@ -416,7 +636,7 @@ async function discoverDiskSensors() {
       defaultThreshold: 1,
       defaultInterval: 30000,
       poll: async () => {
-        const list = await si.fsSize();
+        const list = await getCachedFsSize();
         const d = list.find(x => x.mount === mount);
         return d ? round(d.use, 1) : null;
       }
@@ -430,7 +650,7 @@ async function discoverDiskSensors() {
       defaultThreshold: 0.5,
       defaultInterval: 30000,
       poll: async () => {
-        const list = await si.fsSize();
+        const list = await getCachedFsSize();
         const d = list.find(x => x.mount === mount);
         return d ? round((d.size - d.used) / 1073741824, 2) : null;
       }
@@ -440,7 +660,7 @@ async function discoverDiskSensors() {
 }
 
 async function discoverNetworkSensors() {
-  const ifaces = await si.networkInterfaces();
+  const ifaces = await siCall('networkInterfaces');
   const sensors = [];
 
   // Exclude loopback and common virtual/container interfaces
@@ -460,7 +680,7 @@ async function discoverNetworkSensors() {
       defaultThreshold: 10,
       defaultInterval: 2000,
       poll: async () => {
-        const stats = await si.networkStats(ifaceName);
+        const stats = await getCachedNetworkStats(ifaceName);
         const s = Array.isArray(stats) ? stats[0] : stats;
         return s ? round(s.rx_sec / 1024, 1) : null;
       }
@@ -474,7 +694,7 @@ async function discoverNetworkSensors() {
       defaultThreshold: 10,
       defaultInterval: 2000,
       poll: async () => {
-        const stats = await si.networkStats(ifaceName);
+        const stats = await getCachedNetworkStats(ifaceName);
         const s = Array.isArray(stats) ? stats[0] : stats;
         return s ? round(s.tx_sec / 1024, 1) : null;
       }

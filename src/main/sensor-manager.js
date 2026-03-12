@@ -9,9 +9,10 @@ const TICK_MS = 500;
 class SensorManager extends EventEmitter {
   constructor() {
     super();
-    this._timer     = null;
-    this._sensors   = [];   // { definition, config, lastPolled, lastPublished }
+    this._timer    = null;
+    this._sensors  = [];
     this._mqttClient = null;
+    this._ticking  = false;
   }
 
   // Load sensor definitions + user configs, bind mqtt client
@@ -55,11 +56,17 @@ class SensorManager extends EventEmitter {
   }
 
   async _tick() {
-    const now = Date.now();
-    for (const entry of this._sensors) {
-      if (now - entry.lastPolled < entry.cfg.interval) continue;
-      entry.lastPolled = now;
-      this._pollSensor(entry);
+    if (this._ticking) return; // skip if previous tick is still running
+    this._ticking = true;
+    try {
+      const now = Date.now();
+      for (const entry of this._sensors) {
+        if (now - entry.lastPolled < entry.cfg.interval) continue;
+        entry.lastPolled = now;
+        this._pollSensor(entry);
+      }
+    } finally {
+      this._ticking = false;
     }
   }
 

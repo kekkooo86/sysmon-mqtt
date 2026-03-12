@@ -80,6 +80,7 @@ const LHM_CATEGORY_TYPE = {
   throughputs:  'Throughput',
   throughput:   'Throughput',
   controls:     'Control',
+  data:         'Data',   // memory / storage in GB, MB, etc.
 };
 
 function lhmExtractReadings(node, readings = [], parentType = null) {
@@ -265,17 +266,48 @@ const BACKENDS = [
   { name: 'CoreTemp',                  fn: () => readFromCoreTemp()                               },
 ];
 
+// Cache shared across all callers: avoids spawning N PowerShell processes per tick
+// when multiple sensors read from the same backend in the same polling window.
+const READINGS_CACHE_TTL = 900; // ms — shorter than any typical 1 s poll interval
+let _readingsCache     = null;
+let _readingsCacheTime = 0;
+let _readingsCachePromise = null; // deduplicate concurrent calls during the same tick
+
 /**
  * Returns all sensor readings from the first available backend.
  * Each entry: { type, label, value, unit? }
+ * Results are cached for READINGS_CACHE_TTL ms so that multiple sensors
+ * sharing the same backend only trigger one read per polling cycle.
  * Returns null if no backend is available.
  */
 async function readAllSensors() {
-  for (const backend of BACKENDS) {
-    const data = await backend.fn();
-    if (data) return { source: backend.name, readings: data };
+  const now = Date.now();
+
+  // Return cached result if still fresh
+  if (_readingsCache && (now - _readingsCacheTime) < READINGS_CACHE_TTL) {
+    return _readingsCache;
   }
-  return null;
+
+  // If a read is already in flight, wait for it instead of spawning a second one
+  if (_readingsCachePromise) return _readingsCachePromise;
+
+  _readingsCachePromise = (async () => {
+    for (const backend of BACKENDS) {
+      const data = await backend.fn();
+      if (data) {
+        _readingsCache     = { source: backend.name, readings: data };
+        _readingsCacheTime = Date.now();
+        _readingsCachePromise = null;
+        return _readingsCache;
+      }
+    }
+    _readingsCache     = null;
+    _readingsCacheTime = Date.now(); // cache the "no backend" result too
+    _readingsCachePromise = null;
+    return null;
+  })();
+
+  return _readingsCachePromise;
 }
 
 /**
@@ -337,175 +369,31 @@ async function readCpuTemp() {
   return null;
 }
 
-module.exports = { readAllSensors, readTemperatures, readCpuTemp, isAvailable };
-
-
-// ---------------------------------------------------------------------------
-// Helper: run a PowerShell script reliably via -EncodedCommand
-// ---------------------------------------------------------------------------
-
-function runPS(script, timeoutMs = 5000) {
-  return new Promise((resolve) => {
-    // UTF-16LE + Base64 → avoids all quoting/newline issues with -Command
-    const encoded = Buffer.from(script, 'utf16le').toString('base64');
-    execFile(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
-      { timeout: timeoutMs },
-      (err, stdout) => resolve(err ? '' : (stdout || ''))
-    );
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Backend 1: LibreHardwareMonitor (or OpenHardwareMonitor) via WMI
-// ---------------------------------------------------------------------------
-
-async function readFromWmiBackend(namespace) {
-  const script = `
-try {
-  $sensors = Get-WmiObject -Namespace '${namespace}' -Class Sensor -ErrorAction Stop
-  foreach ($s in $sensors) {
-    Write-Output "$($s.SensorType)|$($s.Name)|$($s.Value)"
+/**
+ * Returns the value of the first reading matching `type` and any of the label patterns.
+ * Uses the shared cache — no extra backend call if data is fresh.
+ * Returns null if not found or no backend available.
+ */
+async function readFirstMatch(type, ...labelPatterns) {
+  const result = await readAllSensors();
+  if (!result) return null;
+  const candidates = result.readings.filter(r => r.type === type && r.value != null && !isNaN(r.value));
+  for (const pattern of labelPatterns) {
+    const match = candidates.find(r => pattern.test(r.label));
+    if (match) return parseFloat(match.value.toFixed(2));
   }
-} catch {
-  Write-Output "ERROR"
-}
-`.trim();
-
-  const out = await runPS(script, 4000);
-  if (!out || out.trim() === 'ERROR' || out.trim() === '') return null;
-
-  const readings = [];
-  for (const line of out.split(/\r?\n/).map(l => l.trim()).filter(Boolean)) {
-    if (line === 'ERROR') continue;
-    const parts = line.split('|');
-    if (parts.length < 3) continue;
-    const [sensorType, name, valueStr] = parts;
-    const value = parseFloat(valueStr);
-    if (!isNaN(value) && name) {
-      readings.push({ type: sensorType, label: name, value });
-    }
-  }
-  return readings.length > 0 ? readings : null;
+  return null;
 }
 
-// ---------------------------------------------------------------------------
-// Backend 2: HWiNFO64 Shared Memory
-// ---------------------------------------------------------------------------
-
-async function readFromHWiNFO64() {
-  const script = `
-$names = @("Global\\HWiNFO_SENSORS_SM2", "HWiNFO_SENSORS_SM2")
-$mmf = $null
-foreach ($n in $names) {
-  try { $mmf = [System.IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting($n); break }
-  catch [System.IO.FileNotFoundException] { }
-}
-if (-not $mmf) { Write-Output "NOT_RUNNING"; exit }
-
-$acc = $mmf.CreateViewAccessor(0, 0, [System.IO.MemoryMappedFiles.MemoryMappedFileAccess]::Read)
-$sig = $acc.ReadUInt32(0)
-if ($sig -ne 0x53574948) { Write-Output "BAD_SIG"; $acc.Dispose(); $mmf.Dispose(); exit }
-
-$rdOff  = $acc.ReadUInt32(32)
-$rdSize = $acc.ReadUInt32(36)
-$rdCnt  = $acc.ReadUInt32(40)
-
-for ($i = 0; $i -lt $rdCnt; $i++) {
-  $pos  = $rdOff + [long]($i * $rdSize)
-  $type = $acc.ReadUInt32($pos)
-  if ($type -eq 0) { continue }
-
-  $lb = New-Object byte[] 128
-  $acc.ReadArray($pos + 12, $lb, 0, 128) | Out-Null
-  $label = [System.Text.Encoding]::ASCII.GetString($lb).TrimEnd([char]0)
-
-  $ub = New-Object byte[] 16
-  $acc.ReadArray($pos + 268, $ub, 0, 16) | Out-Null
-  $unit = [System.Text.Encoding]::ASCII.GetString($ub).TrimEnd([char]0)
-
-  $value = $acc.ReadDouble($pos + 284)
-  Write-Output "$type|$label|$unit|$($value.ToString('F2'))"
+/**
+ * Returns all readings of a given type from the active backend.
+ * Uses the shared cache.
+ */
+async function readByType(type) {
+  const result = await readAllSensors();
+  if (!result) return [];
+  return result.readings.filter(r => r.type === type && r.value != null && !isNaN(r.value));
 }
 
-$acc.Dispose(); $mmf.Dispose()
-`.trim();
-
-  const out = await runPS(script, 5000);
-  if (!out || out.trim() === 'NOT_RUNNING' || out.trim() === 'BAD_SIG') return null;
-
-  const readings = [];
-  for (const line of out.split(/\r?\n/).map(l => l.trim()).filter(Boolean)) {
-    const parts = line.split('|');
-    if (parts.length < 4) continue;
-    const [typeStr, label, unit, valueStr] = parts;
-    const value = parseFloat(valueStr);
-    const HWINFO_TYPE = { '1': 'Temperature', '2': 'Voltage', '3': 'Fan', '7': 'Load' };
-    if (!isNaN(value) && label) {
-      readings.push({ type: HWINFO_TYPE[typeStr] || typeStr, label, unit, value });
-    }
-  }
-  return readings.length > 0 ? readings : null;
-}
-
-// ---------------------------------------------------------------------------
-// Backend 3: Core Temp shared memory
-// ---------------------------------------------------------------------------
-// Core Temp (https://www.alcpu.com/CoreTemp/) exposes CPU temperatures via
-// a shared memory object "CoreTempMappingObject". Free, no time limits.
-//
-// CORE_TEMP_SHARED_DATA layout (offsets in bytes):
-//   0    uiLoad[256]      uint32 ×256  = 1024  CPU core load %
-//   1024 uiTjMax[128]     uint32 ×128  = 512   TjMax per core
-//   1536 uiCoreCnt        uint32       = 4     physical cores
-//   1540 uiCPUCnt         uint32       = 4     CPU sockets
-//   1544 fTemp[256]       float  ×256  = 1024  temperatures
-//   2568 fVID             float        = 4
-//   2572 fCPUSpeed        float        = 4
-//   2576 fFSBSpeed        float        = 4
-//   2580 fMultiplier      float        = 4
-//   2584 ucFahrenheit     byte         = 1     0=Celsius 1=Fahrenheit
-//   2585 ucDeltaToTjMax   byte         = 1     0=real temp 1=delta to TjMax
-
-async function readFromCoreTemp() {
-  const script = `
-$SM = "CoreTempMappingObject"
-try {
-  $mmf = [System.IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting($SM)
-  $acc = $mmf.CreateViewAccessor(0, 0, [System.IO.MemoryMappedFiles.MemoryMappedFileAccess]::Read)
-
-  $coreCnt     = $acc.ReadUInt32(1536)
-  $cpuCnt      = $acc.ReadUInt32(1540)
-  $fahrenheit  = $acc.ReadByte(2584)
-  $deltaMode   = $acc.ReadByte(2585)
-
-  if ($coreCnt -eq 0) { Write-Output "NO_CORES"; $acc.Dispose(); $mmf.Dispose(); exit }
-
-  for ($i = 0; $i -lt $coreCnt; $i++) {
-    $raw = $acc.ReadSingle(1544 + $i * 4)
-    if ($deltaMode -eq 1) {
-      $tjmax = $acc.ReadUInt32(1024 + $i * 4)
-      $raw   = $tjmax - $raw
-    }
-    if ($fahrenheit -eq 1) { $raw = ($raw - 32) * 5 / 9 }
-    Write-Output "Temperature|CPU Core #$i|C|$($raw.ToString('F1'))"
-  }
-
-  $acc.Dispose(); $mmf.Dispose()
-} catch [System.IO.FileNotFoundException] {
-  Write-Output "NOT_RUNNING"
-} catch {
-  Write-Output "ERROR:$($_.Exception.Message)"
-}
-`.trim();
-
-  const out = await runPS(script, 4000);
-  if (!out || out.trim() === 'NOT_RUNNING' || out.trim().startsWith('ERROR:') || out.trim() === 'NO_CORES') return null;
-
-  const readings = [];
-  return readings.length > 0 ? readings : null;
-}
-
-module.exports = { readAllSensors, readTemperatures, readCpuTemp, isAvailable };
+module.exports = { readAllSensors, readTemperatures, readCpuTemp, readFirstMatch, readByType, isAvailable };
 
